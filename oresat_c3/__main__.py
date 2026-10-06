@@ -21,6 +21,7 @@ from olaf import (
 from . import C3State, __version__
 from .protocols.cachestore import CacheStore
 from .services.adcs_manager import ADCSManager
+from .services.mock_gps import MockGPSService
 from .services.beacon import BeaconService
 from .services.channel_router import ChannelRouterService
 from .services.cop_manager import CopManagerService
@@ -164,6 +165,7 @@ def main():
         app.node, node_mgr_service, beacon_service, channel_router_service, node_flasher_service
     )
     adcs_mgr_service = ADCSManager()
+    mock_gps_service = MockGPSService()
     mdb_service = MissionDatabaseService(node_mgr_service)
     payload_service = PayloadService(node_mgr_service, config.mission, mock_hw == "all")
 
@@ -175,6 +177,7 @@ def main():
     app.add_service(edl_service)
     app.add_service(node_mgr_service)
     app.add_service(adcs_mgr_service)
+    app.add_service(mock_gps_service)
     app.add_service(node_flasher_service)
     app.add_service(mdb_service)
     app.add_service(payload_service)

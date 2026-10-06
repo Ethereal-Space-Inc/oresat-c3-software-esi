@@ -116,6 +116,11 @@ $ MOCK_HW="false" python3 -m unittest
 - `I2C_BUS_NUM`: The I2C bus number used by the OPD and F-RAM.
 - `FRAM_ADDR`: The I2C address for the F-RAM chip. Must be in hex (e.g., `"0x50"`)
 
+
+## Ethereal Space Inc. Notes
+
+Until the depenency stack is reworked, you must install a local version of ESI's configs after installing the depenencies for the c3 software.
+
 [oresat-firmware]: https://github.com/oresat/oresat-firmware
 [Flask]: https://flask.palletsprojects.com/en/latest/
 [oresat-olaf]: https://github.com/oresat/oresat-olaf
