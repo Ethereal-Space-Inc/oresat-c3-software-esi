@@ -278,6 +278,7 @@ class PiPlasmaHandler:
         self._store.create_file(new_file)
         self._file = new_file
 
+
 class OsirisHandler:
     # Safekeeping:
     # sudo pppd nodetach nocrtscts lock noauth maxfail 0 persist 10.0.41.1:10.0.41.2 passive local noproxyarp /dev/ttyS3 921600  # noqa: E501
@@ -296,6 +297,7 @@ class OsirisHandler:
         self._piplasma = None
         self._pwr_event = pwr_event
         self._mock = mock
+        self._timeout = 0
 
         if self._state.value > 1:
             self._state.value = 1
@@ -305,39 +307,84 @@ class OsirisHandler:
             time.sleep(10)
             return
 
-        # state_val = self._state.value
-        # if state_val == 0:
-        #     self._idle()
-        # if state_val == 1:
-        #     self._startup()
-        # if state_val == 2:
-        #     self._bootup()
-        # if state_val == 3:
-        #     self._active()
+        state_val = self._state.value
+        if state_val == 0:
+            self._idle()
+        if state_val == 1:
+            self._startup()
+        if state_val == 2:
+            self._bootup()
+        if state_val == 3:
+            self._active()
+        if state_val == 0xFE or state_val == 0xFF:
+            time.sleep(1)
 
     def _idle(self):
         if (
-            self._node_mgr.node_status("piplasma_sci") == 1
-            or self._node_mgr.node_status("piplasma_sci") == 2
+            self._node_mgr.node_status("osiris_sci") == 1
+            or self._node_mgr.node_status("osiris_sci") == 2
         ):
-            self._node_mgr.disable("piplasma_sci")
+            self._node_mgr.disable("osiris_sci")
 
     def _startup(self):
-        while self._node_mgr.node_status("piplasma_sci") == 1:
+        """Turns on the Card. If the card dies, go to the dead mode (does nothing) otherwise cont"""
+        while self._node_mgr.node_status("osiris_sci") == 1:
             time.sleep(0.1)
-        if self._node_mgr.node_status("piplasma_sci") != 2:
+        if self._node_mgr.node_status("osiris_sci") == 0xFF:  # dead
+            self._state.value = 0xFF
+            return
+        if self._node_mgr.node_status("osiris_sci") != 2:
             time.sleep(10)
             return
         self._state.value = 2
 
     def _bootup(self):
-        pass
+        """
+        If we're wating for a component to turn on, wait. If not, handle transitioning to the next
+        phase. Fails to the 0xFE state if we lose contact with the science card, requiring manual
+        recovery.
+        """
+        while self._timeout > 0:
+            self._timeout -= 1
+            time.sleep(1)
+            return
+
+        current_state = self._get_bootstate()
+        if current_state == 0:  # turn on the Oxco, wait 3 minutes for warming.
+            self._change_bootup(1, 180)
+        elif current_state == 1:  # turn ont the septentrio. Allow 15 sec to boot.
+            self._change_bootup(2, 15)
+        elif current_state == 2:
+            self._change_bootup(3, 5)
+        elif current_state == 3:
+            # turn on the pppd connection somehow
+            self._activate_pppd()
 
     def _active(self):
         pass
+
+    def _activate_pppd():
+        # sudo pppd nodetach nocrtscts lock noauth maxfail 0 persist 10.0.41.1:10.0.41.2 passive local noproxyarp /dev/ttyS3 921600  # noqa: E501
+        pass
+
+    def _change_bootup(self, new_state: int, timeout: int) -> None:
+        self._timeout = 5
+        res = self._set_bootstate(2)
+        if not res:
+            self._state.value = 0xFE
 
     def _set_bootstate(self, new_state: int) -> bool:
         try:
             self.node.sdo_write("osiris_sci", 0x4001, 0x2, new_state)
         except SdoError as e:
             logger.error(f"failed to send sdo command : {e}")
+            return False
+        return True
+
+    def _get_bootstate(self, new_state: int) -> int:
+        try:
+            value = self.node.sdo_read("osiris_sci", 0x4001, 0x2)
+        except SdoError as e:
+            logger.error(f"failed to send sdo command : {e}")
+            return -1
+        return value
