@@ -79,9 +79,9 @@ class PayloadService(Service):
             )
         else:
             logger.error("Payload Service started despite mission not having a compatable payload.")
-            raise Exception(
-                "Payload Service started despite mission not having a compatable payload."
-            )
+            if not self._enabled.value or self._state.value != 0:
+                self._enabled.value = False
+                self._state.value = 0
 
         if self._vbatt_bp1_obj.value < 2000 and self._vbatt_bp2_obj.value < 2000:
             logger.error("Battery is not giving coherent data!")
