@@ -710,7 +710,7 @@ class ADCSManager(Service):
                 q_st_rotated = None
 
             if q_st_rotated is None:
-                logger.error(f"Issue calculating q_st_rotated!")
+                logger.error("Issue calculating q_st_rotated!")
                 logger.debug(f"Star tracker output: {star_tracker_output}")
                 if star_tracker_output is not None:
                     logger.debug(f"Star tracker is instance: {isinstance(star_tracker_output, StarTrackerData)}")

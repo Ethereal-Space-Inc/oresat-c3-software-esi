@@ -21,12 +21,12 @@ from olaf import (
 from . import C3State, __version__
 from .protocols.cachestore import CacheStore
 from .services.adcs_manager import ADCSManager
-from .services.mock_gps import MockGPSService
 from .services.beacon import BeaconService
 from .services.channel_router import ChannelRouterService
 from .services.cop_manager import CopManagerService
 from .services.edl import EdlService
 from .services.mission_database import MissionDatabaseService
+from .services.mock_gps import MockGPSService
 from .services.node_flasher import NodeFlasherService
 from .services.node_manager import NodeManagerService
 from .services.payload import PayloadService
