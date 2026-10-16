@@ -88,6 +88,12 @@ def adcs_3d_template():
     return render_olaf_template("adcs_3d.html", name="ADCS 3D (Magnetometers)")
 
 
+@rest_api.app.route("/sdo")
+def sdo_template():
+    """Render keys template."""
+    return render_olaf_template("sdo.html", name="SDO")
+
+
 def watchdog():
     """Pet the watchdog app (which pets the watchdog circuit)."""
 

@@ -710,12 +710,16 @@ class ADCSManager(Service):
                 q_st_rotated = None
 
             if q_st_rotated is None:
-                logger.error(f"Issue calculating q_st_rotated!")
+                logger.error("Issue calculating q_st_rotated!")
                 logger.debug(f"Star tracker output: {star_tracker_output}")
                 if star_tracker_output is not None:
-                    logger.debug(f"Star tracker is instance: {isinstance(star_tracker_output, StarTrackerData)}")
+                    logger.debug(
+                        f"Star tracker is instance: {isinstance(star_tracker_output, StarTrackerData)}"  # noqa: E501
+                    )
                     if isinstance(star_tracker_output.data, StarTrackerData):
-                        logger.debug(f"Star tracker attitude known: {star_tracker_output.data.attitude_known}")
+                        logger.debug(
+                            f"Star tracker attitude known: {star_tracker_output.data.attitude_known}"  # noqa: E501
+                        )
                 logger.warning("Skipping control loop.")
                 self.sleep(1)
                 return
@@ -733,7 +737,6 @@ class ADCSManager(Service):
                 logger.error("Magnetic field values appear to be bogus. Skipping control loop.")
                 self.sleep(5)
                 return
-
 
             logger.debug(f"Pre-filtered quaternion: {q_st_rotated}")
             q, omega = self.EKF.update(datetime.now(timezone.utc).timestamp(), omega, q_st_rotated)
@@ -758,9 +761,8 @@ class ADCSManager(Service):
             # The magnetic dipoles should be updated continuously.
             # Should it go into idle state only after state conditions are met?
 
-            if (
-                quat.error_angle(q_error) <= 0.1
-                and np.all(np.abs(omega) < self.detumble_comp_threshold)
+            if quat.error_angle(q_error) <= 0.1 and np.all(
+                np.abs(omega) < self.detumble_comp_threshold
             ):
                 # TODO: ZERO WHEEL SPEEDS/TURN OFF REACTION WHEELS!
                 # Must wait for wheels to turn off.
@@ -782,7 +784,6 @@ class ADCSManager(Service):
                 logger.info("Changing control mode from MTB_POINTING to IDLE")
                 self.control_mode.value = ControlMode.IDLE.value
                 return
-
 
         else:
             logger.error("Unknown control mode {}", self.control_mode.value)
@@ -1014,7 +1015,9 @@ class ADCSManager(Service):
             logger.debug(f"Data timestamp: {data.timestamp}")
             logger.debug(f"Sensor timestamp for {sensor}: {self.last_sensor_time[sensor]}")
             if data.timestamp == self.last_sensor_time[sensor]:
-                logger.warning(f"Data timstamps match, suggesting there is no new data for {sensor}")
+                logger.warning(
+                    f"Data timstamps match, suggesting there is no new data for {sensor}"
+                )
         if data and data.timestamp != self.last_sensor_time[sensor]:
             self.last_sensor_time[sensor] = data.timestamp
             return data

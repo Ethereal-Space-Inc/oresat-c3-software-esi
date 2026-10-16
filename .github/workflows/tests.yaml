@@ -17,10 +17,10 @@ jobs:
     - name: Clone oresat-c3 repository
       uses: actions/checkout@v6
 
-    - name: Set up Python 3.9
+    - name: Set up Python 3.12
       uses: actions/setup-python@v6
       with:
-        python-version: "3.9"
+        python-version: "3.12"
 
     - name: Install dependencies
       id: dependencies

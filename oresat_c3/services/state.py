@@ -156,6 +156,8 @@ class StateService(Service):
             # wait for battery to be at a good level
         else:
             logger.info("antennas deployed")
+            # set the spacecraft to detumble
+            self.node.od["adcs_manager"]["control_mode"].value = 3
             self._c3_state_obj.value = C3State.STANDBY.value
             self._deployed_obj.value = True
             self._attempts = 0

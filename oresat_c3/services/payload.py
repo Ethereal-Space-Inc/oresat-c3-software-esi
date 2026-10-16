@@ -5,6 +5,7 @@ of extending it to other payloads later.
 """
 
 # unused imports will be used for piplasma and osiris.
+import subprocess
 import time
 from pathlib import Path
 from threading import Event
@@ -36,9 +37,10 @@ class PayloadService(Service):
         self._power_indicatior_event.clear()
 
     def on_start(self) -> None:
-        time.sleep(30)
+        time.sleep(5)
 
         self._state = self.node.od["payload_ctrl"]["state"]
+        self._file_register = self.node.od["payload_ctrl"]["file_register"]
         self._enabled = self.node.od["payload_ctrl"]["enabled"]
 
         bat_1_rec = self.node.od["battery_1"]
@@ -47,7 +49,14 @@ class PayloadService(Service):
 
         if self._mission.__str__() == "osiris_b1":
             logger.info("creating osiris payload handler")
-            # self._payload_handler = BeeconHandler(self._state)
+            self._payload_handler = OsirisHandler(
+                self._state,
+                self._file_register,
+                self._node_mgr,
+                self.node.fwrite_cache,
+                self._power_indicatior_event,
+                self._mock,
+            )
         elif self._mission.__str__() == "osiris_c":
             logger.info("creating osiris-c payload handler - Empty right now")
             # self._payload_handler = BeeconHandler(self._state)
@@ -65,21 +74,22 @@ class PayloadService(Service):
             self._payload_handler = BeeconHandler(
                 self._state,
                 self.node.od["beacon"]["delay"],
-                self. _power_indicatior_event,
+                self._power_indicatior_event,
                 self._mock,
             )
         else:
             logger.error("Payload Service started despite mission not having a compatable payload.")
-            raise Exception(
-                "Payload Service started despite mission not having a compatable payload."
-            )
+            if not self._enabled.value or self._state.value != 0:
+                self._enabled.value = False
+                self._state.value = 0
 
         if self._vbatt_bp1_obj.value < 2000 and self._vbatt_bp2_obj.value < 2000:
             logger.error("Battery is not giving coherent data!")
 
     def on_loop(self) -> None:
-        if not self._enabled.value:
-            time.sleep(10)
+        # todo: make sure this works as intended
+        if not self._enabled.value and self._state.value == 0:
+            time.sleep(2)
             return
         if self._payload_handler is not None:
             try:
@@ -88,7 +98,8 @@ class PayloadService(Service):
                 logger.error(f"Payload handler got error: {e}")
                 self._payload_handler = None
         else:
-            time.sleep(10)
+            time.sleep(2)
+
         if self._power_indicatior_event.is_set() and self.power_high():
             logger.warning("clearing power indicator")
             self._power_indicatior_event.clear()
@@ -198,12 +209,12 @@ class PiPlasmaHandler:
 
     def loop(self):
         if self._mock:
-            time.sleep(10)
+            time.sleep(2)
             return
 
         state_val = self._state.value
         if state_val == 0:
-            self._idle
+            self._idle()
         elif state_val == 1:
             self._boot_piplasma()
         elif state_val == 2:
@@ -278,66 +289,165 @@ class PiPlasmaHandler:
         self._store.create_file(new_file)
         self._file = new_file
 
-class OsirisHandler:
-    # Safekeeping:
-    # sudo pppd nodetach nocrtscts lock noauth maxfail 0 persist 10.0.41.1:10.0.41.2 passive local noproxyarp /dev/ttyS3 921600  # noqa: E501
 
+class OsirisHandler:
     def __init__(
         self,
         in_state: ODVariable,
+        file_register: ODVariable,
         node_mgr: NodeManagerService,
+        store: CacheStore,
         pwr_event: Event,
         mock: bool,
     ):
         self._state = in_state
         self._node_mgr = node_mgr
-        self._filesize = 0
-        self._file = None
-        self._piplasma = None
+        self._store = store
         self._pwr_event = pwr_event
+        self._file_register = file_register
         self._mock = mock
+        self._timeout = 0
+        self._last_state_val = 0
 
         if self._state.value > 1:
             self._state.value = 1
 
+    def __del__(self):
+        if self._ppp_proc is not None:
+            self._ppp_proc.kill()
+
     def loop(self):
         if self._mock:
-            time.sleep(10)
+            time.sleep(2)
             return
 
-        # state_val = self._state.value
-        # if state_val == 0:
-        #     self._idle()
-        # if state_val == 1:
-        #     self._startup()
-        # if state_val == 2:
-        #     self._bootup()
-        # if state_val == 3:
-        #     self._active()
+        # self._pwr_event
+
+        state_val = self._state.value
+        if state_val == 0 and self._last_state_val != 0:
+            state_val = 4
+
+        if state_val == 0:
+            self._idle()
+        if state_val == 1:
+            self._startup()
+        if state_val == 2:
+            self._bootup()
+        if state_val == 3:
+            self._active()
+        if state_val == 4:
+            self._shutdown()
+        if state_val == 5:
+            self._powersave()
+        if state_val == 0xFE or state_val == 0xFF:
+            time.sleep(1)
+        self._last_state_val = state_val
 
     def _idle(self):
         if (
-            self._node_mgr.node_status("piplasma_sci") == 1
-            or self._node_mgr.node_status("piplasma_sci") == 2
+            self._node_mgr.node_status("osiris_sci") == 1
+            or self._node_mgr.node_status("osiris_sci") == 2
         ):
-            self._node_mgr.disable("piplasma_sci")
+            self._node_mgr.disable("osiris_sci")
 
     def _startup(self):
-        while self._node_mgr.node_status("piplasma_sci") == 1:
+        """Turns on the Card. If the card dies, go to the dead mode (does nothing) otherwise cont"""
+        while self._node_mgr.node_status("osiris_sci") == 1:
             time.sleep(0.1)
-        if self._node_mgr.node_status("piplasma_sci") != 2:
+        if self._node_mgr.node_status("osiris_sci") == 0xFF:  # dead
+            self._state.value = 0xFF
+            return
+        if self._node_mgr.node_status("osiris_sci") != 2:
             time.sleep(10)
             return
         self._state.value = 2
 
     def _bootup(self):
-        pass
+        """
+        If we're wating for a component to turn on, wait. If not, handle transitioning to the next
+        phase. Fails to the 0xFE state if we lose contact with the science card, requiring manual
+        recovery.
+        """
+        while self._timeout > 0:
+            self._timeout -= 1
+            time.sleep(1)
+            return
+
+        current_state = self._get_bootstate()
+        if current_state == 0:  # turn on the Oxco, wait 3 minutes for warming.
+            self._change_bootup(1, 180)
+        elif current_state == 1:  # turn on the septentrio. Allow 15 sec to boot.
+            self._change_bootup(2, 15)
+        elif current_state == 2:
+            self._change_bootup(3, 5)
+        elif current_state == 3:
+            self._activate_pppd()
+            self._state.value = 3
 
     def _active(self):
-        pass
+        # have we been commanded to send a file to the osiris?
+        if self._file_register.value != "":
+            self._send_file()
+            self._file_register.value = ""
+
+        # should we powersave?
+        if self._pwr_event.is_set():
+            self._state.value = 5
+            self._idle()
+
+    def _shutdown(self):
+        # At some point in the future, we should send a command to the osiris to dump all data now.
+        self._node_mgr.disable("osiris_sci")
+        self._state.value = 0
+
+    def _powersave(self):
+        self._node_mgr.disable("osiris_sci")
+
+        if not self._pwr_event.is_set():
+            self._state.value = 1
+
+    def _activate_pppd(self):
+        self._ppp_proc = subprocess.Popen(
+            "/usr/sbin/pppd",
+            "nodetach",
+            "nocrtscts",
+            "lock",
+            "noauth",
+            "maxfail",
+            "0",
+            "persist",
+            "10.0.41.1:10.0.41.2",
+            "passive",
+            "local",
+            "noproxyarp",
+            "/dev/ttyS3",
+            "921600",
+        )
+
+    def _change_bootup(self, new_state: int, timeout: int) -> None:
+        self._timeout = 5
+        res = self._set_bootstate(2)
+        if not res:
+            self._state.value = 0xFE
 
     def _set_bootstate(self, new_state: int) -> bool:
         try:
             self.node.sdo_write("osiris_sci", 0x4001, 0x2, new_state)
         except SdoError as e:
             logger.error(f"failed to send sdo command : {e}")
+            return False
+        return True
+
+    def _get_bootstate(self, new_state: int) -> int:
+        try:
+            value = self.node.sdo_read("osiris_sci", 0x4001, 0x2)
+        except SdoError as e:
+            logger.error(f"failed to send sdo command : {e}")
+            return -1
+        return value
+
+    def _send_file(self) -> None:
+        filename = self._file_register.value
+        cmd = f"scp -O /var/cache/oresat/fwrite/{filename} root@10.0.41.2:/tmp/uploads"
+        subprocess.run(cmd)
+        # TODO: Add better reporting

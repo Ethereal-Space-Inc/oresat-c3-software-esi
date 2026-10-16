@@ -49,7 +49,7 @@ def put_request(destination: ByteFieldU8, file_path: str) -> PutRequest:
 
 
 class TestCfdp(unittest.TestCase):
-    TIMEOUT_DUR = 0.6
+    TIMEOUT_DUR = 1
 
     def setUp(self):
         self.sat_file = Path("c3_tmp_123")
@@ -217,7 +217,6 @@ class TestCfdp(unittest.TestCase):
         # dst --> Finished
         # ??? According to 4.7.1 b) the origional PDU should be re-issued. So:
         # src --> EoF
-        # dst --> Finished # same timeout as the EOF, not acked so re-issued as well.
         # dst --> Ack (EoF)
         # dst --> Finished
         # src --> Ack (Finished)
@@ -231,6 +230,9 @@ class TestCfdp(unittest.TestCase):
         # src --> Filedata
         self._src_gnd_to_sc_dest(0.15, FileDataPdu)
         # src --> EoF
+        time.sleep(0.5)
+        # Without this delay, this test is nondeterministic since the Finished PDU is sometimes
+        # reissued. It has no effect on the operation, but causes this test to fail randomly.
         self._src_gnd_to_sc_dest(0.15, EofPdu)
         # dst X-- Ack (EoF)
         time.sleep(0.15)
@@ -403,7 +405,7 @@ class TestCfdp(unittest.TestCase):
             destination_id=self.sat_id,
             source_file=None,
             dest_file=None,
-            trans_mode=None,
+            trans_mode=TransmissionMode.ACKNOWLEDGED,
             closure_requested=True,
             msgs_to_user=[dir_req],
         )
@@ -544,28 +546,28 @@ class TestCfdp(unittest.TestCase):
         )
 
     def _src_gnd_to_sc_dest(self, delay: float, expected_type: ABCMeta) -> None:
-        pdu = PduFactory.from_raw(self._cfdp_tm_queue_gnd.get().pack())
+        pdu = PduFactory.from_raw(self._cfdp_tm_queue_gnd.get().pdu.pack())
         self.assertIsInstance(pdu, expected_type)
         self._cfdp_dest_queue.put(pdu)
         if delay > 0:
             time.sleep(delay)
 
     def _dest_gnd_to_sc_src(self, delay: float, expected_type: ABCMeta) -> None:
-        pdu = PduFactory.from_raw(self._cfdp_tm_queue_gnd.get().pack())
+        pdu = PduFactory.from_raw(self._cfdp_tm_queue_gnd.get().pdu.pack())
         self.assertIsInstance(pdu, expected_type)
         self._cfdp_src_queue.put(pdu)
         if delay > 0:
             time.sleep(delay)
 
     def _src_sc_to_gnd_dest(self, delay: float, expected_type: ABCMeta) -> None:
-        pdu = PduFactory.from_raw(self._cfdp_tm_queue.get().pack())
+        pdu = PduFactory.from_raw(self._cfdp_tm_queue.get().pdu.pack())
         self.assertIsInstance(pdu, expected_type)
         self._cfdp_dest_queue_gnd.put(pdu)
         if delay > 0:
             time.sleep(delay)
 
     def _dest_sc_to_gnd_src(self, delay: float, expected_type: ABCMeta) -> None:
-        pdu = PduFactory.from_raw(self._cfdp_tm_queue.get().pack())
+        pdu = PduFactory.from_raw(self._cfdp_tm_queue.get().pdu.pack())
         self.assertIsInstance(pdu, expected_type)
         self._cfdp_src_queue_gnd.put(pdu)
         if delay > 0:

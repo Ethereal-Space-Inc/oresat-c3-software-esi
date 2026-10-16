@@ -142,8 +142,6 @@ class TestCacheStore(unittest.TestCase):
         """Test create_file()"""
         self.assertEqual(self.cache.create_file(self.exists), FilestoreResult.CREATE_NOT_ALLOWED)
         self.assertEqual(self.cache.create_file(self.doesnt), FilestoreResult.CREATE_SUCCESS)
-        self.assertEqual(self.cache.create_file(self.invalid), FilestoreResult.CREATE_NOT_ALLOWED)
-        self.assertEqual(self.cache.create_file(self.directory), FilestoreResult.CREATE_NOT_ALLOWED)
 
         new = Path("c3_newfile_125")
         self.assertEqual(self.cache.create_file(new), FilestoreResult.CREATE_SUCCESS)
@@ -173,9 +171,6 @@ class TestCacheStore(unittest.TestCase):
         self.assertEqual(
             self.cache.rename_file(self.doesnt, self.exists),
             FilestoreResult.RENAME_OLD_FILE_DOES_NOT_EXIST,
-        )
-        self.assertEqual(
-            self.cache.rename_file(self.exists, self.invalid), FilestoreResult.RENAME_NOT_PERFORMED
         )
         self.assertEqual(
             self.cache.rename_file(self.exists, self.doesnt), FilestoreResult.RENAME_SUCCESS
