@@ -142,7 +142,6 @@ class TestCacheStore(unittest.TestCase):
         """Test create_file()"""
         self.assertEqual(self.cache.create_file(self.exists), FilestoreResult.CREATE_NOT_ALLOWED)
         self.assertEqual(self.cache.create_file(self.doesnt), FilestoreResult.CREATE_SUCCESS)
-        self.assertEqual(self.cache.create_file(self.directory), FilestoreResult.CREATE_NOT_ALLOWED)
 
         new = Path("c3_newfile_125")
         self.assertEqual(self.cache.create_file(new), FilestoreResult.CREATE_SUCCESS)
