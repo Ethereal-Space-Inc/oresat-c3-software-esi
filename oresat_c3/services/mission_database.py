@@ -51,7 +51,10 @@ class MissionDatabaseService(Service):
             self.sleep(self._refresh_delay.value)
             return
 
-        if self._node_mgr_service.node_status("gps") == 0xFF:  # Dead
+        if (
+            self._node_mgr_service.node_status("gps") == 0xFF
+            or self._node_mgr_service.node_status("gps") == 4
+        ):  # Dead or missing
             self.active.value = False
 
         if (
