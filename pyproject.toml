@@ -16,7 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Topic :: Software Development :: Embedded Systems",
 ]
-dynamic = ["version"]
+version="10.0.0"
 
 dependencies = [
     "bitstring",
@@ -25,8 +25,8 @@ dependencies = [
     "gpiod",
     "fastcrc~=0.3",
     "numpy>=1.19.5",
-    "oresat-configs @ git+https://github.com/Ethereal-Space-Inc/oresat-configs-esi@main",
-    "oresat-olaf @ git+https://github.com/Ethereal-Space-Inc/oresat-olaf-esi@main",
+    "oresat-configs @ git+https://github.com/Ethereal-Space-Inc/oresat-configs-esi",
+    "oresat-olaf @ git+https://github.com/Ethereal-Space-Inc/oresat-olaf-esi",
     "scipy>=1.6.0",
     "skyfield>=1.54",
     "smbus2",

@@ -226,8 +226,6 @@ class RadiosService(Service):
 
         return message
 
-
-
     #### SBAND HANDLING
 
     def _downlink_through_sband(self) -> bool:
@@ -276,7 +274,8 @@ class RadiosService(Service):
             return
         # this function has 3 instances of code reuse. Bad. That should be fixed.
 
-        if (self._sband_ready_at < monotonic()
+        if (
+            self._sband_ready_at < monotonic()
             and not self.sband_queue.empty()
             and not self.sband_lock
         ):

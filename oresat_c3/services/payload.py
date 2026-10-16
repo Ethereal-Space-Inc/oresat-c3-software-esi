@@ -74,7 +74,7 @@ class PayloadService(Service):
             self._payload_handler = BeeconHandler(
                 self._state,
                 self.node.od["beacon"]["delay"],
-                self. _power_indicatior_event,
+                self._power_indicatior_event,
                 self._mock,
             )
         else:
@@ -324,7 +324,7 @@ class OsirisHandler:
         # self._pwr_event
 
         state_val = self._state.value
-        if (state_val == 0 and self._last_state_val != 0):
+        if state_val == 0 and self._last_state_val != 0:
             state_val = 4
 
         if state_val == 0:
@@ -421,7 +421,7 @@ class OsirisHandler:
             "local",
             "noproxyarp",
             "/dev/ttyS3",
-            "921600"
+            "921600",
         )
 
     def _change_bootup(self, new_state: int, timeout: int) -> None:

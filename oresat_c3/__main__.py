@@ -93,6 +93,7 @@ def sdo_template():
     """Render keys template."""
     return render_olaf_template("sdo.html", name="SDO")
 
+
 def watchdog():
     """Pet the watchdog app (which pets the watchdog circuit)."""
 
