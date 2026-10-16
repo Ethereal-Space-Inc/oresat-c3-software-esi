@@ -714,11 +714,11 @@ class ADCSManager(Service):
                 logger.debug(f"Star tracker output: {star_tracker_output}")
                 if star_tracker_output is not None:
                     logger.debug(
-                        f"Star tracker is instance: {isinstance(star_tracker_output, StarTrackerData)}"
+                        f"Star tracker is instance: {isinstance(star_tracker_output, StarTrackerData)}"  # noqa: E501
                     )
                     if isinstance(star_tracker_output.data, StarTrackerData):
                         logger.debug(
-                            f"Star tracker attitude known: {star_tracker_output.data.attitude_known}"
+                            f"Star tracker attitude known: {star_tracker_output.data.attitude_known}"  # noqa: E501
                         )
                 logger.warning("Skipping control loop.")
                 self.sleep(1)
