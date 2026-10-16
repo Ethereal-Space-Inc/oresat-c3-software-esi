@@ -97,6 +97,8 @@ class TestEdl(unittest.TestCase):
         self.assertEqual(response.code, EdlCommandCode.TX_CTRL)
         self.assertEqual(response.values[0], (True))
         self.assertEqual(tx_enable.value, True)
+        print(start_time)
+        print(last_enable.value)
         self.assertTrue(start_time >= last_enable.value)
 
         # disable
