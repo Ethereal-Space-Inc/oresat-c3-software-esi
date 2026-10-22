@@ -6,13 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "oresat-c3"
 description = "OreSat C3 OLAF app"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
 classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Topic :: Software Development :: Embedded Systems",
 ]
