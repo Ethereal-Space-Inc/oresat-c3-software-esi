@@ -108,6 +108,9 @@ class RadiosService(Service):
         self._sband_status = self.node.od["sdr_ctrl"]["status"]
         self.node.add_sdo_callbacks("sdr_ctrl", "should_enable", None, self._sband_should_enable_cb)
 
+        self._sband_send_time = 0
+        self.sband_lock = False
+
         if "sdr" in self.node._od_db:  # not self._mock_hw and
             logger.info("creating sband radio class")
             self.sband = SbandRadio(self.node, self._node_mgr, self._sband_status)
@@ -540,7 +543,7 @@ class SbandRadio(Radio):
             if val == 0:
                 logger.info("resending power on cmd to sdr.")
                 self._send_start_cmd()
-            elif val == 2:
+            elif val == 1:
                 self._state = 3
             elif val == 0xFF:
                 self._state = 0xFF
@@ -568,6 +571,7 @@ class SbandRadio(Radio):
     # fault tolerant sdo functions.
     def _send_start_cmd(self) -> None:
         try:
+            # PUT THE CONFIG BEFORE SETTING sdr_power
             self._node.sdo_write("sdr", "sdr_power", None, 1)
         except SdoError as e:
             logger.error(f"failed to send sdo power on cmd to SDR: {e}")

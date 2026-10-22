@@ -32,7 +32,8 @@ dependencies = [
     "smbus2",
     "spacepackets>=0.30.1",
     "ccsds-cop>=0.1.1",
-    "typing-extensions>=4.13.0"
+    "typing-extensions>=4.13.0",
+    "pyserial"
 ]
 
 [dependency-groups]
