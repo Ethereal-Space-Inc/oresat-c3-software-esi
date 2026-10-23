@@ -7,7 +7,6 @@ Handles interfacing with the radio driver daemon.
 import socket
 import struct
 import time
-from math import ceil
 from queue import SimpleQueue
 from time import monotonic
 
@@ -117,7 +116,8 @@ class RadiosService(Service):
                 self.node,
                 self._node_mgr,
                 self._sband_status,
-                self._sband_timeout
+                self._sband_timeout,
+                self._sband_enable
             )
         else:
             self.sband = None
@@ -137,8 +137,7 @@ class RadiosService(Service):
             self.lband.rf_reset()
             self.node.od["lband"]["synth_relock_count"].value = self.lband.rf_reset_count
 
-        if self.sband is not None and (self._sband_enable.value or self.sband.state != 0):
-            self._handle_sband()
+        self._handle_sband()
 
         if recv := self._recv_edl_request():
             self.recv_queue.put(recv)
@@ -259,52 +258,21 @@ class RadiosService(Service):
         """Don't like this function. Should work for now."""
         if self.sband is None:
             return
-
-        if not self._sband_enable.value and self.sband._state:
-            self._sband_enable.value = False
-            # I don't think this will auto call the enable callback. TODO: confirm this.
-            self._sband_should_enable_cb(False)
-            return
-
-        if self._sband_enable.value and not self.sband.is_rf_ok():
-            if self.sband.state == 0xFF:
-                self._sband_enable.value = False
-                # I don't think this will auto call the enable callback. TODO: confirm this.
-                self._sband_should_enable_cb(False)
-                return
-            self.sband.enable()
-
-        if self._sband_timeout_timestamp < monotonic():
-            logger.info("Sband timeout reached.")
-            self._sband_enable.value = False
-            # I don't think this will auto call the enable callback. TODO: confirm this.
-            self._sband_should_enable_cb(False)
-            return
-        # this function has 3 instances of code reuse. Bad. That should be fixed.
+        self.sband.state_machine()
 
         if (
-            self._sband_ready_at < monotonic()
+            self.sband.can_send_now()
             and not self.sband_queue.empty()
             and not self.sband_lock
         ):
             self._send_queued()
-
-        # if we have sent frames to the sdr and it has been 1 second since the last frame, downlink.
-        if self._sband_send_time > 0 and self.last_frame + 1 > monotonic():
-            self.force_sband_send()
-
-    def force_sband_send(self) -> None:
-        """Send the cmd to start sending data, and compute the time after which we will be done"""
-        self.sband.send_queued_messages()
-        self._sband_ready_at = monotonic() + self._sband_send_time
-        self._sband_send_time = 0
 
     def try_send_sband(self, message: bytes) -> None:
         """
         Function to try to send bytes to sband. If the sband is currently busy, send the bytes to
         the queue instead.
         """
-        if self._sband_ready_at > monotonic():
+        if not self.sband.can_send_now():
             self.sband_queue.put(message)
         else:
             ### BAD. SHOULD TIMEOUT.
@@ -322,39 +290,24 @@ class RadiosService(Service):
         if self.sband is None:
             return
         try:
-            sband_rnode = self.node.remote_nodes["sdr"]
-            with sband_rnode.sdo['tx_data'].open(
-                'wb', size=len(message), block_transfer=True
-            ) as outfile:
-                outfile.write(message)
-                self._add_sband_time(len(message))
-                self.last_frame = monotonic()
+            self.sband.send_frame()
         except SdoError as e:
             logger.error(f"failed to send data to sband: {e}")
-
-    def _add_sband_time(self, msg_len: int) -> None:
-        """
-        Computes and adds the est time that the sband will take to finish.
-        SDR sends fixed size frames with payload size ~1097 octets. We will be using data rate
-        675000 spSec / 2 spSym, so 675000 bps.
-        """
-        if msg_len < 1097:
-            self._sband_send_time += 1275 / 675000
-        else:
-            frames = ceil(msg_len / 1097)
-            self._sband_send_time += frames * (1275 / 675000)
 
     def _send_queued(self) -> None:
         self.sband_lock = True
         try:
             while not self.sband_queue.empty():
                 frame = self.sband_queue.get()
-                self._send_on_sband(frame)
+                self.sband.send_frame(frame)
         except Exception as e:
             self.sband_lock = False
             self.sband_queue.queue.clear()
             logger.error(f"failed to send all elements of the sband queue: {e}")
         self.sband_lock = False
+
+    def force_sband_send(self):
+        self.sband.send_data_now()
 
 
 class Radio:
@@ -525,7 +478,8 @@ class SbandRadio(Radio):
         node: MasterNode,
         node_mgr: NodeManagerService,
         status: ODVariable,
-        timeout: ODVariable
+        timeout: ODVariable,
+        should_enable: ODVariable
     ):
         """Request gpio."""
         super().__init__()
@@ -534,6 +488,7 @@ class SbandRadio(Radio):
         self._state = 0
         self._od_status = status
         self._od_timeout = timeout
+        self._od_should_enable = should_enable
 
         self._timeout_time = 0
         self._send_timer = monotonic()
@@ -568,6 +523,9 @@ class SbandRadio(Radio):
             self._sdo_fault = 0
             self._node_mgr.disable("sdr")
 
+        if self._od_should_enable.value:
+            self._state = 1
+
     def _boot(self):
         """turns on the """
         node_status = self._node_mgr.node_status("sdr")
@@ -593,7 +551,7 @@ class SbandRadio(Radio):
         radios.force_sband_send() function is called, create a new timeout for the sband actually
         downlinking the sent information."""
         if self._last_frame + 1 < monotonic():
-            self.send_data()
+            self.send_data_now()
 
         if self._timeout_time < monotonic():
             self._state = 4
@@ -654,7 +612,7 @@ class SbandRadio(Radio):
             self._state = 0xFF
             logger("Sband SDR driver failed during _reset")
 
-    def send_data(self):
+    def send_data_now(self):
         """
         Send the commands to being downlinking and start the timer for when we should send again"""
         self._state = 3
@@ -666,7 +624,7 @@ class SbandRadio(Radio):
         succeeded and self._fault_tolerant_forced_sdo_write("tx_send_buffer", None, 1)
         if not succeeded:
             self._state = 0xFF
-            logger("Sband SDR driver failed during send_data")
+            logger("Sband SDR driver failed during send_data_now")
 
         self._send_timer = monotonic() + duration + self.MARGIN
 
