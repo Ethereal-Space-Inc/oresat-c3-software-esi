@@ -39,7 +39,7 @@ class ChannelRouterService(Service):
                 try:
                     msg = dl.get_nowait()
                     self._radios_service.send_edl_response(msg)
-                except Empty:  # noqa: PERF203
+                except Empty:
                     break
 
         if self.node.od["status"].value == C3State.EDL:

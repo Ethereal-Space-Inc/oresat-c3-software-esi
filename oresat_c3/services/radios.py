@@ -10,7 +10,7 @@ import time
 from queue import SimpleQueue
 from time import monotonic
 
-from canopen.objectdictionary import ODVariable
+from canopen.objectdictionary import ObjectDictionary, ODVariable
 from canopen.sdo.exceptions import SdoError
 from gpiod.line import Value
 from olaf import MasterNode, Service, logger
@@ -107,7 +107,6 @@ class RadiosService(Service):
         self._sband_status = self.node.od["sdr_ctrl"]["status"]
         self.node.add_sdo_callbacks("sdr_ctrl", "should_enable", None, self._sband_should_enable_cb)
 
-        self._sband_send_time = 0
         self.sband_lock = False
 
         if "sdr" in self.node._od_db:  # not self._mock_hw and
@@ -117,7 +116,8 @@ class RadiosService(Service):
                 self._node_mgr,
                 self._sband_status,
                 self._sband_timeout,
-                self._sband_enable
+                self._sband_enable,
+                self.node.remote_nodes["sdr"]
             )
         else:
             self.sband = None
@@ -234,7 +234,6 @@ class RadiosService(Service):
         return message
 
     #### SBAND HANDLING
-
     def _downlink_through_sband(self) -> bool:
         """Can/should we downlink through the sband?"""
         if self.sband is None:
@@ -247,10 +246,10 @@ class RadiosService(Service):
             return
         if value:
             logger.info("Started Sband bootup process.")
-            self.sband.enable()
+            self.sband.state_machine()
             self._sband_timeout_timestamp = monotonic() + self._sband_timeout.value
         else:
-            self.sband.disable()
+            self.sband.state_machine()
             self._sband_timeout_timestamp = 0
             logger.info("Disabled Sband")
 
@@ -290,7 +289,7 @@ class RadiosService(Service):
         if self.sband is None:
             return
         try:
-            self.sband.send_frame()
+            self.sband.send_frame(message)
         except SdoError as e:
             logger.error(f"failed to send data to sband: {e}")
 
@@ -479,7 +478,8 @@ class SbandRadio(Radio):
         node_mgr: NodeManagerService,
         status: ODVariable,
         timeout: ODVariable,
-        should_enable: ODVariable
+        should_enable: ODVariable,
+        _sdr_rnode: ObjectDictionary
     ):
         """Request gpio."""
         super().__init__()
@@ -489,7 +489,9 @@ class SbandRadio(Radio):
         self._od_status = status
         self._od_timeout = timeout
         self._od_should_enable = should_enable
+        self._sdr_rnode = _sdr_rnode
 
+        self._sdo_fault = 0
         self._timeout_time = 0
         self._send_timer = monotonic()
         self._frames_to_send = 0
@@ -515,16 +517,16 @@ class SbandRadio(Radio):
     # State machine functions
     def _off(self):
         """If the sdr is on, turn it off"""
+        if self._od_should_enable.value:
+            self._state = 1
+
         node_status = self._node_mgr.node_status("sdr")
-        if node_status != 0 or node_status != 0xFF:
+        if node_status != 0 and node_status != 0xFF and node_status != 4:
             logger.info("Turning off SDR due to state 0.")
             self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 0)
             self._fault_tolerant_forced_sdo_write("sdr_power", None, 0)
             self._sdo_fault = 0
             self._node_mgr.disable("sdr")
-
-        if self._od_should_enable.value:
-            self._state = 1
 
     def _boot(self):
         """turns on the """
@@ -569,6 +571,9 @@ class SbandRadio(Radio):
         self._node_mgr.disable("sdr")
         self._state = 0
 
+    def _fault(self) -> None:
+        self._node_mgr.disable("sdr")
+
     # Helper functions to run several SDO commands in series.
     def _configure(self):
         """
@@ -607,7 +612,7 @@ class SbandRadio(Radio):
         """send the commands to turn off the Transmitter and let the S-Band take more data."""
         succeeded = True
         succeeded and self._fault_tolerant_forced_sdo_write("sdr_power", None, 0)
-        succeeded and self._fault_tolerant_forced_sdo_write("tx_send_buffer", None, 0)
+        succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 0)
         if not succeeded:
             self._state = 0xFF
             logger("Sband SDR driver failed during _reset")
@@ -621,7 +626,7 @@ class SbandRadio(Radio):
 
         succeeded = True
         succeeded and self._fault_tolerant_forced_sdo_write("sdr_power", None, 1)
-        succeeded and self._fault_tolerant_forced_sdo_write("tx_send_buffer", None, 1)
+        succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 1)
         if not succeeded:
             self._state = 0xFF
             logger("Sband SDR driver failed during send_data_now")
@@ -660,7 +665,7 @@ class SbandRadio(Radio):
         self,
         index: int | str,
         subindex: int | str | None,
-    ) -> {str | float | bytes | bool | int, bool}:
+    ) -> [str | float | bytes | bool | int, bool]:
         """
         Keeps trying to SDO read until it fails too many times or succeeds. Returns the value and
         success state, with the value being meaningful only if the sdo succeeded.
@@ -673,11 +678,12 @@ class SbandRadio(Radio):
                 self._sdo_fault += 1
                 if self._sdo_fault >= self.SDO_FAULT_LIMIT:
                     self._state = 0xFF
-                    return {0, False}
+                    return [0, False]
                 time.sleep(0.01)
             else:
+                logger.debug(f"Read value {value} from {index}:{subindex} on S band SDR")
                 self._sdo_fault = 0
-                return {value, True}
+                return [value, True]
 
     def _fault_tolerant_forced_sdo_write(
         self,
@@ -700,13 +706,12 @@ class SbandRadio(Radio):
                     return False
                 time.sleep(0.01)
             else:
+                logger.debug(f"Wrote value {value} to {index}:{subindex} on S band SDR")
                 self._sdo_fault = 0
                 return True
 
     def _fault_tolerant_forced_sdo_block_write_frame(
         self,
-        index: int | str,
-        subindex: int | str | None,
         frame: bytes
     ) -> bool:
         """
@@ -721,7 +726,7 @@ class SbandRadio(Radio):
 
         while True:
             try:
-                sband_rnode = self.node.remote_nodes["sdr"]
+                sband_rnode = self.sdr_rnode
                 with sband_rnode.sdo['tx_data'].open(
                     'wb', size=len(frame), block_transfer=True
                 ) as outfile:
@@ -740,6 +745,7 @@ class SbandRadio(Radio):
                     return False
                 time.sleep(0.01)
             else:
+                logger.debug("Sent frame to S band SDR")
                 self._sdo_fault = 0
                 self._frames_to_send += 1
                 self._last_frame = monotonic()

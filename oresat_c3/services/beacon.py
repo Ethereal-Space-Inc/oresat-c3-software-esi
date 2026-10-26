@@ -126,9 +126,10 @@ class BeaconService(Service):
         )
 
         logger.debug("leop beaconing")
-        send_time = (len(packet) + 200) / 45000.0 * 8  # hardcoded to uhf for now. TODO: FIX
+        send_time = (len(packet) + 200) / 45000.0 * 8  # hardcoded for now. TODO: FIX
         duration = self._leop_timeout_obj.value / 1000.0
         send_attempts = int(duration / send_time) + 1
+        #TODO: Change this to use random noise instead of full beacons after the first one.
 
         self._ts = time()
         for i in range(send_attempts):
