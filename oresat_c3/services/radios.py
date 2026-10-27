@@ -248,10 +248,8 @@ class RadiosService(Service):
         if value:
             logger.info("Started Sband bootup process.")
             self.sband.state_machine()
-            self._sband_timeout_timestamp = monotonic() + self._sband_timeout.value
         else:
             self.sband.state_machine()
-            self._sband_timeout_timestamp = 0
             logger.info("Disabled Sband")
 
     def _sband_reset_cb(self, value: bool) -> None:
@@ -502,7 +500,7 @@ class SbandRadio(Radio):
         self._sdr_rnode = _sdr_rnode
 
         self._sdo_fault = 0
-        self._timeout_time = 0
+        self._timeout_start_time = 0
         self._send_timer = monotonic()
         self._frames_to_send = 0
         self._last_frame = 0
@@ -535,8 +533,9 @@ class SbandRadio(Radio):
         node_status = self._node_mgr.node_status("sdr")
         if node_status != 0 and node_status != 0xFF and node_status != 4:
             logger.info("Turning off SDR due to state 0.")
-            self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 0)
-            self._fault_tolerant_forced_sdo_write("sdr_power", None, 0)
+            self._sdo_fault = 0 # we shouldn't error if we're trying to turn it off.
+            self._fault_tolerant_forced_lax_write("tx_send_cache", None, 0)
+            self._fault_tolerant_forced_lax_write("sdr_power", None, 0)
             self._sdo_fault = 0
             self._node_mgr.disable("sdr")
 
@@ -547,7 +546,7 @@ class SbandRadio(Radio):
         if node_status == 0:
             logger.debug("telling nodemgr to turn on sdr.")
             self._node_mgr.enable("sdr")
-            self._timeout_time = monotonic() + self._od_timeout.value
+            self._timeout_start_time = monotonic()
             self._state = 1
             self._sdo_fault = 0
         elif node_status == 2:  # The sdr is powered on. Configure and move to state 2.
@@ -567,7 +566,7 @@ class SbandRadio(Radio):
         if self._last_frame + 1 < monotonic() and self._frames_to_send != 0:
             self.send_data_now()
 
-        if self._timeout_time < monotonic():
+        if self._timeout_start_time + self._od_timeout.value < monotonic():
             self._od_should_enable.value = False
             self._state = 4
 
@@ -579,12 +578,13 @@ class SbandRadio(Radio):
 
     def _disable(self) -> None:
         """Turn off the sband."""
-        self._state = 4
+        logger.info("Shutting down s-band gracefully")
         self._sdo_fault = 0 # we shouldn't error if we're trying to turn it off.
         self._fault_tolerant_lax_sdo_write("tx_send_cache", None, 0)
         self._fault_tolerant_lax_sdo_write("sdr_power", None, 0)
         self._sdo_fault = 0
         self._node_mgr.disable("sdr")
+        time.sleep(2) # give the nodemanager time to mark it as off before state 0 kills it again.
         self._state = 0
 
     def _fault(self) -> None:
