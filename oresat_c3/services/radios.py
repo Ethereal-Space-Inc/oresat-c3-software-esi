@@ -279,11 +279,13 @@ class RadiosService(Service):
         the queue instead.
         """
         if not self.sband.can_send_now():
+            logger.debug("putting frame for sband in queue.")
             self.sband_queue.put(message)
         else:
             ### BAD. SHOULD TIMEOUT.
             while self.sband_lock:
                 time.sleep(0.033)
+            logger.debug("sending frame to sband directly.")
             if not self.sband_queue.empty():
                 self._send_queued()
             self._send_on_sband(message)
@@ -306,6 +308,7 @@ class RadiosService(Service):
             while not self.sband_queue.empty():
                 frame = self.sband_queue.get()
                 self.sband.send_frame(frame)
+                logger.debug(f"sent queued frame to sband. remaining: {self.sband_queue.qsize}")
         except Exception as e:
             self.sband_lock = False
             self.sband_queue.queue.clear()
@@ -757,6 +760,7 @@ class SbandRadio(Radio):
                 self._sdo_fault = 0
                 self._frames_to_send += 1
                 self._last_frame = monotonic()
+                return
 
     # customer facing interaction functions
     def send_frame(self, payload):
