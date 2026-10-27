@@ -245,12 +245,11 @@ class RadiosService(Service):
         """Turns on or off the sband (if it exists) based on passed value"""
         if self.sband is None:
             return
+        self.sband.state_machine()
         if value:
-            logger.info("Started Sband bootup process.")
-            self.sband.state_machine()
+            logger.info("Started S band SDR bootup process.")
         else:
-            self.sband.state_machine()
-            logger.info("Disabled Sband")
+            logger.info("Disabled S band SDR")
 
     def _sband_reset_cb(self, value: bool) -> None:
         """Turns on or off the sband (if it exists) based on passed value"""
