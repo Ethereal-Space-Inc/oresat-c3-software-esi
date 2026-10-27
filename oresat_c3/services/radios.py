@@ -106,6 +106,7 @@ class RadiosService(Service):
         self._sband_timeout = self.node.od["sdr_ctrl"]["enable_timeout"]
         self._sband_status = self.node.od["sdr_ctrl"]["status"]
         self.node.add_sdo_callbacks("sdr_ctrl", "should_enable", None, self._sband_should_enable_cb)
+        self.node.add_sdo_callbacks("sdr_ctrl", "reset", None, self._sband_reset_cb)
 
         self.sband_lock = False
 
@@ -252,6 +253,12 @@ class RadiosService(Service):
             self.sband.state_machine()
             self._sband_timeout_timestamp = 0
             logger.info("Disabled Sband")
+
+    def _sband_reset_cb(self, value: bool) -> None:
+        """Turns on or off the sband (if it exists) based on passed value"""
+        if self.sband is None:
+            return
+        self.sband.rf_reset()
 
     def _handle_sband(self) -> None:
         """Don't like this function. Should work for now."""
@@ -552,7 +559,7 @@ class SbandRadio(Radio):
         """Recieve frames from other services. Once a timeout occurs or a the
         radios.force_sband_send() function is called, create a new timeout for the sband actually
         downlinking the sent information."""
-        if self._last_frame + 1 < monotonic():
+        if self._last_frame + 1 < monotonic() and self._frames_to_send != 0:
             self.send_data_now()
 
         if self._timeout_time < monotonic():
@@ -562,6 +569,7 @@ class SbandRadio(Radio):
         """Wait for the send timer to run out."""
         if self._send_timer < monotonic():
             self._reset()
+            self._state = 2
 
     def _disable(self) -> None:
         self._state = 4
@@ -594,7 +602,7 @@ class SbandRadio(Radio):
             )
         elif not samples[1]:
             self._state = 0xFF
-            logger("Sband SDR driver failed during _configure in samples per symbol")
+            logger.error("Sband SDR driver failed during _configure in samples per symbol")
 
         sample_rate = self._fault_tolerant_forced_sdo_read("tx_settings", "sampling_rate")
         if sample_rate[1] and (sample_rate[0] != self.SET_RATE):
@@ -606,7 +614,7 @@ class SbandRadio(Radio):
             )
         elif not sample_rate[1]:
             self._state = 0xFF
-            logger("Sband SDR driver failed during _configure in sample rate")
+            logger.error("Sband SDR driver failed during _configure in sample rate")
 
     def _reset(self):
         """send the commands to turn off the Transmitter and let the S-Band take more data."""
@@ -615,21 +623,22 @@ class SbandRadio(Radio):
         succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 0)
         if not succeeded:
             self._state = 0xFF
-            logger("Sband SDR driver failed during _reset")
+            logger.error("Sband SDR driver failed during _reset")
 
     def send_data_now(self):
         """
         Send the commands to being downlinking and start the timer for when we should send again"""
         self._state = 3
         baud = self.SET_RATE / (self.SET_SAMPLES / 2) # should be 675000 with the flight config
-        duration = self._frames_to_send * 1275 * 8 / baud # SDR uses fixed 1275B frames
+        duration = self._frames_to_send * 1275 * 8 / baud + 1 # SDR uses fixed 1275B frames.
+        # We add a second to the duration so that there aren't any issues with state switching.
 
         succeeded = True
         succeeded and self._fault_tolerant_forced_sdo_write("sdr_power", None, 1)
         succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 1)
         if not succeeded:
             self._state = 0xFF
-            logger("Sband SDR driver failed during send_data_now")
+            logger.error("Sband SDR driver failed during send_data_now")
 
         self._send_timer = monotonic() + duration + self.MARGIN
 
@@ -679,7 +688,7 @@ class SbandRadio(Radio):
                 if self._sdo_fault >= self.SDO_FAULT_LIMIT:
                     self._state = 0xFF
                     return [0, False]
-                time.sleep(0.01)
+                time.sleep(0.051)
             else:
                 logger.debug(f"Read value {value} from {index}:{subindex} on S band SDR")
                 self._sdo_fault = 0
@@ -704,7 +713,7 @@ class SbandRadio(Radio):
                 if self._sdo_fault >= self.SDO_FAULT_LIMIT:
                     self._state = 0xFF
                     return False
-                time.sleep(0.01)
+                time.sleep(0.051)
             else:
                 logger.debug(f"Wrote value {value} to {index}:{subindex} on S band SDR")
                 self._sdo_fault = 0
@@ -726,8 +735,7 @@ class SbandRadio(Radio):
 
         while True:
             try:
-                sband_rnode = self.sdr_rnode
-                with sband_rnode.sdo['tx_data'].open(
+                with self._sdr_rnode.sdo['tx_data'].open(
                     'wb', size=len(frame), block_transfer=True
                 ) as outfile:
                     outfile.write(frame)
@@ -762,6 +770,9 @@ class SbandRadio(Radio):
         return self._state == 2 or self._state == 3
 
     def rf_reset(self) -> None:
+        self._node_mgr.disable("sdr")
+        time.sleep(5)
+        self.state = 1
         self._rf_reset_count += 1
 
     @property
