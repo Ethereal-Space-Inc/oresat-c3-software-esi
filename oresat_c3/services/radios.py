@@ -491,7 +491,7 @@ class SbandRadio(Radio):
         should_enable: ODVariable,
         _sdr_rnode: ObjectDictionary
     ):
-        """Request gpio."""
+        """Initialization."""
         super().__init__()
         self._node = node
         self._node_mgr = node_mgr
@@ -509,6 +509,8 @@ class SbandRadio(Radio):
 
     def state_machine(self):
         """State machine for the Sband. States are defined above."""
+        if not self._od_should_enable.value and self._state != 0:
+            self._state = 4
 
         # would be really nice if python had switch statements.
         if self._state == 0:
@@ -539,7 +541,7 @@ class SbandRadio(Radio):
             self._node_mgr.disable("sdr")
 
     def _boot(self):
-        """turns on the """
+        """turns on the sband until it heartbeats and has been configured"""
         node_status = self._node_mgr.node_status("sdr")
         logger.debug(f"nodemgr status of sdr: {node_status}.")
         if node_status == 0:
@@ -549,9 +551,9 @@ class SbandRadio(Radio):
             self._state = 1
             self._sdo_fault = 0
         elif node_status == 2:  # The sdr is powered on. Configure and move to state 2.
-            self._state = 2
             self._configure()
             self._reset()
+            self._state = 2
         elif node_status == 0xFF:  # dead
             self.disable()
             self._state = 0xFF
@@ -566,6 +568,7 @@ class SbandRadio(Radio):
             self.send_data_now()
 
         if self._timeout_time < monotonic():
+            self._od_should_enable.value = False
             self._state = 4
 
     def _on_active(self):
@@ -575,15 +578,21 @@ class SbandRadio(Radio):
             self._state = 2
 
     def _disable(self) -> None:
+        """Turn off the sband."""
         self._state = 4
-        self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 0)
-        self._fault_tolerant_forced_sdo_write("sdr_power", None, 0)
+        self._sdo_fault = 0 # we shouldn't error if we're trying to turn it off.
+        self._fault_tolerant_lax_sdo_write("tx_send_cache", None, 0)
+        self._fault_tolerant_lax_sdo_write("sdr_power", None, 0)
         self._sdo_fault = 0
         self._node_mgr.disable("sdr")
         self._state = 0
 
     def _fault(self) -> None:
-        self._node_mgr.disable("sdr")
+        """Turn off the sband. Do not move from state 0xFF unless reset."""
+        node_status = self._node_mgr.node_status("sdr")
+        if node_status != 0 and node_status != 0xFF and node_status != 4:
+            logger.info("Turning off SDR due to state 0xFF.")
+            self._node_mgr.disable("sdr")
 
     # Helper functions to run several SDO commands in series.
     def _configure(self):
@@ -624,6 +633,7 @@ class SbandRadio(Radio):
         succeeded = True
         succeeded and self._fault_tolerant_forced_sdo_write("sdr_power", None, 0)
         succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 0)
+        self._frames_to_send = 0
         if not succeeded:
             self._state = 0xFF
             logger.error("Sband SDR driver failed during _reset")
@@ -697,6 +707,30 @@ class SbandRadio(Radio):
                 self._sdo_fault = 0
                 return [value, True]
 
+    def _fault_tolerant_lax_sdo_write(
+        self,
+        index: int | str,
+        subindex: int | str | None,
+        value: str | float | bytes | bool
+    ) -> bool:
+        """
+        Keeps trying to read an SDO until it fails too many times or succeeds. Returns the value
+        and success state, with the value being meaningful only if the sdo succeeded.
+        """
+        try:
+            self._node.sdo_write("sdr", index, subindex, value)
+        except SdoError as e:
+            logger.error(f"failed to sdo write SDR: {e}")
+            self._sdo_fault += 1
+            if self._sdo_fault >= self.SDO_FAULT_LIMIT:
+                self._state = 0xFF
+                return False
+            return False
+        else:
+            logger.debug(f"Wrote value {value} to {index}:{subindex} on S band SDR")
+            self._sdo_fault = 0
+            return True
+
     def _fault_tolerant_forced_sdo_write(
         self,
         index: int | str,
@@ -764,19 +798,23 @@ class SbandRadio(Radio):
 
     # customer facing interaction functions
     def send_frame(self, payload):
+        """Just calls the private function."""
         self._fault_tolerant_forced_sdo_block_write_frame(payload)
 
     def can_send_now(self):
+        """Used to determine if we should queue or send immediately"""
         return self._state == 2
 
     def is_rf_ok(self) -> bool:
+        """Used to determine if we should try to use the sband (see can_send_now for how.)"""
         self._od_status.value = self._state
         return self._state == 2 or self._state == 3
 
     def rf_reset(self) -> None:
+        """Turns off the sdr, clears the state, and restarts the boot process."""
         self._node_mgr.disable("sdr")
         time.sleep(5)
-        self.state = 1
+        self._state = 1
         self._rf_reset_count += 1
 
     @property
