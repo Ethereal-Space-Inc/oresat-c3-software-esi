@@ -533,8 +533,8 @@ class SbandRadio(Radio):
         if node_status != 0 and node_status != 0xFF and node_status != 4:
             logger.info("Turning off SDR due to state 0.")
             self._sdo_fault = 0 # we shouldn't error if we're trying to turn it off.
-            self._fault_tolerant_forced_lax_write("tx_send_cache", None, 0)
-            self._fault_tolerant_forced_lax_write("sdr_power", None, 0)
+            self._fault_tolerant_lax_sdo_write("tx_send_cache", None, 0)
+            self._fault_tolerant_lax_sdo_write("sdr_power", None, 0)
             self._sdo_fault = 0
             self._node_mgr.disable("sdr")
 
@@ -631,7 +631,7 @@ class SbandRadio(Radio):
         """send the commands to turn off the Transmitter and let the S-Band take more data."""
         succeeded = True
         succeeded and self._fault_tolerant_forced_sdo_write("sdr_power", None, 0)
-        succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 0)
+        # succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 0)
         self._frames_to_send = 0
         if not succeeded:
             self._state = 0xFF
@@ -646,7 +646,7 @@ class SbandRadio(Radio):
         # We add a second to the duration so that there aren't any issues with state switching.
 
         succeeded = True
-        succeeded and self._fault_tolerant_forced_sdo_write("sdr_power", None, 1)
+        # succeeded and self._fault_tolerant_forced_sdo_write("sdr_power", None, 1)
         succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 1)
         if not succeeded:
             self._state = 0xFF
@@ -654,7 +654,7 @@ class SbandRadio(Radio):
 
         self._send_timer = monotonic() + duration + self.MARGIN
 
-    # Fault tolerant SDO functions
+    # Fault tolerant SDO functions because cantbus and cantopen fucking suck.
     def _fault_tolerant_lax_sdo_read_log(
         self,
         index: int | str,
@@ -671,10 +671,7 @@ class SbandRadio(Radio):
         except SdoError as e:
             logger.error(f"failed to sdo read for debugging from SDR: {e}")
             self._sdo_fault += 1
-            if self._sdo_fault >= self.SDO_FAULT_LIMIT:
-                self._state = 0xFF
-                return
-            time.sleep(0.01)
+            time.sleep(0.07)
         else:
             self._sdo_fault = 0
             if info:
@@ -771,7 +768,7 @@ class SbandRadio(Radio):
 
         while True:
             try:
-                with self._sdr_rnode.sdo['tx_data'].open(
+                with self._sdr_rnode.sdo['tx_speedy_transfer'].open(
                     'wb', size=len(frame), block_transfer=True
                 ) as outfile:
                     outfile.write(frame)
@@ -781,13 +778,14 @@ class SbandRadio(Radio):
                 self._sdo_fault += 1
                 if self._sdo_fault >= self.SDO_FAULT_LIMIT:
                     if attempts < 2:
+                        self._sdo_fault = 0
                         attempts += 1
                         logger.error(f"reattempting SDO of frame to Sband. Attempts:{attempts}")
                         time.sleep(0.31415) # ideally shift us off any PDOs
                         continue
                     self._state = 0xFF
                     return False
-                time.sleep(0.01)
+                time.sleep(0.07)
             else:
                 logger.debug("Sent frame to S band SDR")
                 self._sdo_fault = 0
@@ -798,6 +796,22 @@ class SbandRadio(Radio):
     # customer facing interaction functions
     def send_frame(self, payload):
         """Just calls the private function."""
+        attempts = 0
+        while True:
+            result = self._fault_tolerant_forced_sdo_read("sdr_status", None)
+            if not result[1]:
+                if self.state == 0xFF:
+                    return
+            elif result[0] == 2:
+                break
+            else:
+                if result[0] == 0:
+                    self._fault_tolerant_forced_sdo_write("sdr_power", None, 1)
+                time.sleep(0.5)
+                attempts += 1
+                if attempts > 60:
+                    logger.error("SDR failed to set power to on after 30 second.")
+
         self._fault_tolerant_forced_sdo_block_write_frame(payload)
 
     def can_send_now(self):
