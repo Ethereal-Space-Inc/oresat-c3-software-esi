@@ -156,6 +156,7 @@ def main():
 
     # The C3 needs a special OreSatFileCache that can speak CFDP
     app.node._fwrite_cache = CacheStore(app.node.fwrite_cache.dir)  # pylint: disable=W0212
+    app.node._fread_cache = CacheStore(app.node.fread_cache.dir)  # pylint: disable=W0212
 
     app.od["versions"]["sw_version"].value = __version__
 
@@ -166,9 +167,7 @@ def main():
     node_flasher_service = NodeFlasherService(app.node.fwrite_cache.dir, node_mgr_service)
     cop_service = CopManagerService()
     channel_router_service = ChannelRouterService(radios_service, cop_service)
-    edl_service = EdlService(
-        app.node, node_mgr_service, beacon_service, channel_router_service, node_flasher_service
-    )
+    edl_service = EdlService(app.node, node_mgr_service, beacon_service, channel_router_service, node_flasher_service)  # noqa: E501
     adcs_mgr_service = ADCSManager()
     mdb_service = MissionDatabaseService(node_mgr_service)
     payload_service = PayloadService(node_mgr_service, config.mission, mock_hw == "all")

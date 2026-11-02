@@ -28,6 +28,7 @@ class EdlVcid(IntEnum):
     C3_COMMAND = 0
     FILE_TRANSFER = 1
     IDLE = 2
+    PAYLOAD_FILE_DOWNLINK = 3
 
 
 class EdlPacket:

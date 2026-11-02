@@ -34,11 +34,14 @@ class ChannelRouterService(Service):
         self._last_clcw_time = 0.0
 
     def on_loop(self) -> None:
-        for dl in self._downlink_routes.values():
+        for vcid, dl in self._downlink_routes.items():
             while True:
                 try:
                     msg = dl.get_nowait()
-                    self._radios_service.send_edl_response(msg)
+                    if vcid == EdlVcid.PAYLOAD_FILE_DOWNLINK:
+                        self._radios_service.try_send_sband(msg)
+                    else:
+                        self._radios_service.send_edl_response(msg)
                 except Empty:
                     break
 

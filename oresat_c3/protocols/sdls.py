@@ -86,7 +86,7 @@ class SdlsOresat(SdlsEmpty):
 
 
 # There should be some VC parameters class that sets how VCs interact with COP-1 and SDLS.
-SPI_LIST = [SdlsOresat(), SdlsOresat(), SdlsEmpty()]  # spi definition.
+SPI_LIST = [SdlsOresat(), SdlsOresat(), SdlsEmpty(), SdlsOresat()]  # spi definition.
 
 
 def get_sdls_len(vcid: int) -> int:
