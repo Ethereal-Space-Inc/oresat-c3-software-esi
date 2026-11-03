@@ -582,7 +582,7 @@ class OsirisDownlink:
 
     def _create_pdu(self, file: str):
         """Create a pdu from the given str as a filename and put it into the source handler."""
-        self._transmission_bytes = self._fread.stat(file)
+        self._transmission_bytes = self._fread.stat(Path(file))
 
         # create the PDU
         put_req = PutRequest(
@@ -608,7 +608,7 @@ class OsirisDownlink:
         archive = self._create_file_archive()
 
         # await the S band being on.
-        while not self._radios.sdr_ready:
+        while not self._radios.sdr_ready():
             time.sleep(1)
 
         # Turn on the source handler and create the PDU.

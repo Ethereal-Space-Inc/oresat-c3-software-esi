@@ -4,6 +4,7 @@ import os
 import struct
 import subprocess
 from bisect import insort_left
+from os import listdir, remove
 from pathlib import Path
 from typing import BinaryIO, Optional
 
@@ -46,7 +47,22 @@ class CacheStore(VirtualFilestore, OreSatFileCache):
     def filename_from_full_path(self, path: Path) -> Optional[str]:
         return path.name
 
+    def update_filelist(self) -> None:
+        """
+        If we run a command to create a tar archive, the cachestore doesn't realize that we've made
+        a new file.
+        """
+        with self._lock:
+            for f in listdir(self._dir):
+                try:
+                    oresat_file = OreSatFile(self._dir + f)
+                    self._data.append(oresat_file)
+                except Exception:  # pylint: disable=W0718
+                    remove(self._dir + f)  # invalid file name
+            self._data = sorted(self._data)
+
     def file_exists(self, path: Path) -> bool:
+        self.update_filelist()
         with self._lock:
             return any(path.name == f.name for f in self._data)
 
@@ -89,6 +105,7 @@ class CacheStore(VirtualFilestore, OreSatFileCache):
             raise FileNotFoundError(file)
 
     def create_file(self, file: Path) -> FilestoreResult:
+        self.update_filelist()
         with self._lock:
             new = Path(self._dir) / file.name
             try:
@@ -106,6 +123,7 @@ class CacheStore(VirtualFilestore, OreSatFileCache):
 
     def delete_file(self, file: Path) -> FilestoreResult:
         # I would use OreSatFileCache.remove() here but it doesn't tell me if it failed
+        self.update_filelist()
         with self._lock:
             for f in self._data:
                 if f.name == file.name:
@@ -116,6 +134,7 @@ class CacheStore(VirtualFilestore, OreSatFileCache):
 
     def rename_file(self, old_file: Path, new_file: Path) -> FilestoreResult:
         # old_file must exist in the cache but new_file can be any valid name
+        self.update_filelist()
         with self._lock:
             for f in self._data:
                 if old_file.name == f.name:
@@ -132,6 +151,7 @@ class CacheStore(VirtualFilestore, OreSatFileCache):
     def replace_file(self, replaced_file: Path, source_file: Path) -> FilestoreResult:
         # both arguments must exist in the cache. replaced keeps its name but get's sources
         # contents. source is removed.
+        self.update_filelist()
         with self._lock:
             if not any(replaced_file.name == f.name for f in self._data):
                 return FilestoreResult.REPLACE_FILE_NAME_ONE_TO_BE_REPLACED_DOES_NOT_EXIST
