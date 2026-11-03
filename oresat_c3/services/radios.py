@@ -315,6 +315,9 @@ class RadiosService(Service):
     def force_sband_send(self):
         self.sband.send_data_now()
 
+    def sdr_ready(self) -> bool:
+        return self.sband.is_rf_ok()
+
 
 class Radio:
     def __init__(self):

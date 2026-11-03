@@ -84,6 +84,9 @@ class EdlService(Service):
         self._cfdp_source_handler = None
         self._cfdp_dest_handler = None
 
+        self.payload_cfdp_tm_queue = SimpleQueue()  # send payload telemetry pdus from here
+        self.payload_cfdp_src_queue = SimpleQueue()  # send payload tc for the source here
+
         self.GND_ID = ByteFieldU8(0)
         self.SAT_ID = ByteFieldU8(1)
         self._event = Event()
@@ -228,6 +231,8 @@ class EdlService(Service):
             self._cmd_downlink.put_nowait(res_message)
         elif vcid == EdlVcid.FILE_TRANSFER:
             self._file_downlink.put_nowait(res_message)
+        elif vcid == EdlVcid.PAYLOAD_FILE_DOWNLINK:
+            self.payload_file_downlink.put_nowait(res_message)
 
     def _process_command(self) -> None:
         try:
@@ -265,6 +270,25 @@ class EdlService(Service):
             next_tm = self._cfdp_tm_queue.get(False)
             self._respond(EdlVcid.FILE_TRANSFER, next_tm.pdu)
 
+    def _process_payload_cfdp(self) -> None:
+        try:
+            frame = self._payload_file_uplink.get_nowait()
+        except Empty:
+            frame = None
+
+        if frame is not None:
+            req_packet = self._frame_to_packet(frame)
+        else:
+            req_packet = None
+
+        if req_packet is not None:
+            self.payload_cfdp_src_queue.put_nowait(req_packet.payload)
+
+        while not self.payload_cfdp_tm_queue.empty():
+            next_tm = self.payload_cfdp_tm_queue.get(False)
+            self._respond(EdlVcid.FILE_TRANSFER, next_tm.pdu)
+
+
     def _handle_pdu(self, pdu: AbstractFileDirectiveBase):
         packet_dest = get_packet_destination(pdu)
         logger.debug(f"putting cfdp pdu in {packet_dest} queue")
@@ -278,6 +302,7 @@ class EdlService(Service):
     def on_loop(self):
         self._process_command()
         self._process_cfdp()
+        self._process_payload_cfdp()
         self.sleep_ms(50)
 
     def _run_cmd(self, request: EdlCommandRequest) -> EdlCommandResponse:

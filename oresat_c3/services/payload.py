@@ -9,17 +9,19 @@ import subprocess
 import time
 from pathlib import Path
 from queue import SimpleQueue
-from threading import Event
+from threading import Event, Thread
 from time import monotonic
 
 import serial
 from canopen.objectdictionary import ODVariable
 from canopen.sdo.exceptions import SdoError
+from cfdppy import CfdpState
 from cfdppy.mib import (
     RemoteEntityConfig,
     RemoteEntityConfigTable,
 )
-from olaf import Service, logger
+from cfdppy.request import PutRequest
+from olaf import OreSatFile, Service, logger
 from oresat_configs.constants import Mission
 from spacepackets.cfdp import (
     ChecksumType,
@@ -32,6 +34,7 @@ from ..protocols.cfdp import (
     SourceEntityHandler,
 )
 from ..subsystems.opd import OpdNode
+from .edl import EdlService
 from .node_manager import NodeManagerService
 from .radios import RadiosService
 
@@ -43,18 +46,23 @@ class PayloadService(Service):
     def __init__(
         self,
         radio_mgr: RadiosService,
+        edl_srvce: EdlService,
         node_mgr: NodeManagerService,
         mission: Mission,
         mock: bool = True
     ) -> None:
         super().__init__()
         self._node_mgr = node_mgr
+        self._radios = radio_mgr
+        self._edl = edl_srvce
+
         self._mission = mission
         self._mock = mock
         self._payload_handler = None
         # event used to centrally tell payload services to powersave / resume
         self._power_indicatior_event = Event()
         self._power_indicatior_event.clear()
+        self._downlink_thread = None
 
     def on_start(self) -> None:
         time.sleep(5)
@@ -63,9 +71,14 @@ class PayloadService(Service):
         self._file_register = self.node.od["payload_ctrl"]["file_register"]
         self._enabled = self.node.od["payload_ctrl"]["enabled"]
 
+        self._sdr_should_enable = self.node.od["sdr_ctrl"]["should_enable"]
+        self._sdr_sband_downlink = self.node.od["sdr_ctrl"]["sband_downlink"]
+
         bat_1_rec = self.node.od["battery_1"]
         self._vbatt_bp1_obj = bat_1_rec["pack_1_vbatt"]
         self._vbatt_bp2_obj = bat_1_rec["pack_2_vbatt"]
+
+        self._downlink_handler = None
 
         if self._mission.__str__() == "osiris_b1":
             logger.info("creating osiris payload handler")
@@ -76,6 +89,13 @@ class PayloadService(Service):
                 self.node.fwrite_cache,
                 self._power_indicatior_event,
                 self._mock,
+            )
+            self._downlink_handler = OsirisDownlink(
+                self.node.fread_cache,
+                self._radios,
+                self._edl,
+                self._sdr_should_enable,
+                self._sdr_sband_downlink
             )
         elif self._mission.__str__() == "osiris_c":
             logger.info("creating osiris-c payload handler - Empty right now")
@@ -103,8 +123,15 @@ class PayloadService(Service):
                 self._enabled.value = False
                 self._state.value = 0
 
+        if self._downlink_handler is not None:
+            self.node.add_sdo_callbacks("payload_ctrl", "downlink_now", None, self.downlink_now)
+
         if self._vbatt_bp1_obj.value < 2000 and self._vbatt_bp2_obj.value < 2000:
             logger.error("Battery is not giving coherent data!")
+
+    def __del__(self) -> None:
+        if self._downlink_thread is not None and self._downlink_thread.is_alive():
+            self._downlink_thread.join()
 
     def on_loop(self) -> None:
         # todo: make sure this works as intended
@@ -141,6 +168,9 @@ class PayloadService(Service):
             and self._vbatt_bp2_obj.value > self.BAT_LEVEL_HIGH
         )
 
+    def downlink_now(self, val: bool):
+        self._downlink_thread = Thread(target = self._downlink_handler.handle_downlink)
+        self._downlink_thread.start()
 
 class BeeconHandler:
     # Beecon state pseudoenum:
@@ -477,14 +507,23 @@ class OsirisDownlink:
     """Class intended to handle managing the downlink through the SDR. Works with but independent of
     the OsirisHandler. Has its own cfdp source entity."""
 
-    def __init__(self, fread_cache: CacheStore):
-        """start the cfdp source entity."""
+    def __init__(
+        self,
+        fread_cache: CacheStore,
+        radios: RadiosService,
+        edlsrv: EdlService,
+        should_enable: ODVariable,
+        downlink_through_sband: ODVariable
+    ):
+        """Create the cfdp source entity."""
 
         self._fread = fread_cache
+        self._radios = radios
+        self._edlsrv = edlsrv
+        self._od_sdr_enable = should_enable
+        self._od_sdr_downlk = downlink_through_sband
 
         self._payload_put_req_queue = SimpleQueue()
-        self._payload_cfdp_tm_queue = SimpleQueue()
-        self._payload_cfdp_src_queue = SimpleQueue()
         self.GND_ID = ByteFieldU8(10)
         self.SAT_ID = ByteFieldU8(20)
         self._event = Event()
@@ -507,23 +546,27 @@ class OsirisDownlink:
         )
 
         self._cfdp_source_handler = SourceEntityHandler(
-            self.put_req_queue,
-            self._cfdp_src_queue,
-            self._cfdp_tm_queue,
+            self._payload_put_req_queue,
+            self._edlsrv.payload_cfdp_src_queue,
+            self._edlsrv.payload_cfdp_tm_queue,
             fread_cache,
             remote_entities,
             self.GND_ID,
             self.SAT_ID,
             self._event,
         )
-        self._cfdp_source_handler.start()
+        # self._cfdp_source_handler.start()
 
-    def _create_file_archive(self):
-        """Function starts with nothing and returns a PDU request to a valid tar file"""
+    def _create_file_archive(self) -> str:
+        """
+        Take all of the files from the picozed (.bz2 in the filename somewhere) and put them into
+        an archive. We don't compress the arhive because all the component files are already
+        compressed.
+        """
 
         # get the files from the fread directory, reduce it to the ones that use bz2 (from picozed)
         files = self._fread.data
-        files_to_downlink = [file for file in files if "bz2" in file]
+        files_to_downlink = [file.name for file in files if "bz2" in file.name]
 
         # create a new tar archive and put all of the files into it.
         new_archive = f"osiris_archive_{time.time()}.tar"
@@ -533,5 +576,56 @@ class OsirisDownlink:
 
         # delete the files that are now in the archive.
         for file in files_to_downlink:
-            self._fread.delete_file(file)
+            self._fread.delete_file(OreSatFile(file))
 
+        return new_archive
+
+    def _create_pdu(self, file: str):
+        """Create a pdu from the given str as a filename and put it into the source handler."""
+        self._transmission_bytes = self._fread.stat(file)
+
+        # create the PDU
+        put_req = PutRequest(
+            destination_id=self.GND_ID,
+            source_file=Path(file),
+            dest_file=Path(file),
+            trans_mode=TransmissionMode.UNACKNOWLEDGED, # for testing, blind transfer
+            closure_requested=False
+        )
+
+        self.put_req_queue.put(put_req)
+
+    def handle_downlink(self):
+        """Master function that should be called when trying to downlink."""
+
+        # turn on the sband
+        self._od_sdr_enable.value = True
+        prev_sdr_downlink = self._od_sdr_downlk.value
+        self._od_sdr_downlk.value = False
+        time.sleep(3)
+
+        # create the archive
+        archive = self._create_file_archive()
+
+        # await the S band being on.
+        while not self._radios.sdr_ready:
+            time.sleep(1)
+
+        # Turn on the source handler and create the PDU.
+        self._cfdp_source_handler.start()
+        self._create_pdu(archive)
+
+        # await the src_handler entering idle mode then stop it
+        while not self._cfdp_source_handler.source_handler.state == CfdpState.IDLE:
+            time.sleep(1)
+        self._event.set()
+        time.sleep(2)
+        self._event.clear()
+
+        # await the sband having no more frames to send.
+        while not self._radios.sband_queue.empty():
+            time.sleep(1)
+
+        # turn off the sband
+        self._od_sdr_enable.value = False
+        self._od_sdr_downlk.value = prev_sdr_downlink
