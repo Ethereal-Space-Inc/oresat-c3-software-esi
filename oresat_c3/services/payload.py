@@ -21,7 +21,7 @@ from cfdppy.mib import (
     RemoteEntityConfigTable,
 )
 from cfdppy.request import PutRequest
-from olaf import OreSatFile, Service, logger
+from olaf import Service, logger
 from oresat_configs.constants import Mission
 from spacepackets.cfdp import (
     ChecksumType,
@@ -571,12 +571,12 @@ class OsirisDownlink:
         # create a new tar archive and put all of the files into it.
         new_archive = f"osiris_archive_{time.time()}.tar"
         cmd = f"tar -rf {new_archive} {' '.join(files_to_downlink)}"
-        logger.info("Running cmd \"{cmd}\" to prepare archive for downlink.")
+        logger.info(f"Running cmd \"{cmd}\" to prepare archive for downlink.")
         subprocess.run(cmd, shell=True, cwd=self._fread.dir)
 
         # delete the files that are now in the archive.
-        for file in files_to_downlink:
-            self._fread.delete_file(OreSatFile(file))
+        # for file in files_to_downlink[:]:
+        #     self._fread.delete_file(OreSatFile(file))
 
         return new_archive
 
@@ -593,7 +593,7 @@ class OsirisDownlink:
             closure_requested=False
         )
 
-        self.put_req_queue.put(put_req)
+        self._payload_put_req_queue.put(put_req)
 
     def handle_downlink(self):
         """Master function that should be called when trying to downlink."""
@@ -604,7 +604,7 @@ class OsirisDownlink:
         self._od_sdr_downlk.value = False
         time.sleep(3)
 
-        # create the archive
+        # create the archive the raspi was
         archive = self._create_file_archive()
 
         # await the S band being on.
@@ -614,6 +614,7 @@ class OsirisDownlink:
         # Turn on the source handler and create the PDU.
         self._cfdp_source_handler.start()
         self._create_pdu(archive)
+        time.sleep(5)
 
         # await the src_handler entering idle mode then stop it
         while not self._cfdp_source_handler.source_handler.state == CfdpState.IDLE:
@@ -622,8 +623,8 @@ class OsirisDownlink:
         time.sleep(2)
         self._event.clear()
 
-        # await the sband having no more frames to send.
-        while not self._radios.sband_queue.empty():
+        # await the sband having no more frames to send and having returned to the ready state.
+        while (not self._radios.sband_queue.empty()) or (not self._radios.sband.can_send_now()):
             time.sleep(1)
 
         # turn off the sband

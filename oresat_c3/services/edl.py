@@ -232,7 +232,7 @@ class EdlService(Service):
         elif vcid == EdlVcid.FILE_TRANSFER:
             self._file_downlink.put_nowait(res_message)
         elif vcid == EdlVcid.PAYLOAD_FILE_DOWNLINK:
-            self.payload_file_downlink.put_nowait(res_message)
+            self._payload_file_downlink.put_nowait(res_message)
 
     def _process_command(self) -> None:
         try:
@@ -286,7 +286,7 @@ class EdlService(Service):
 
         while not self.payload_cfdp_tm_queue.empty():
             next_tm = self.payload_cfdp_tm_queue.get(False)
-            self._respond(EdlVcid.FILE_TRANSFER, next_tm.pdu)
+            self._respond(EdlVcid.PAYLOAD_FILE_DOWNLINK, next_tm.pdu)
 
 
     def _handle_pdu(self, pdu: AbstractFileDirectiveBase):

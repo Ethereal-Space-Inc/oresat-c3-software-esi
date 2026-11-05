@@ -74,6 +74,7 @@ class CacheStore(VirtualFilestore, OreSatFileCache):
         they just expect you to do it yourself?
         """
 
+        self.update_filelist()
         with self._lock:
             for f in self._data:
                 if file.name == f.name:

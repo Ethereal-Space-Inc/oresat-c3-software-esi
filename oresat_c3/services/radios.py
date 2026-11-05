@@ -501,6 +501,7 @@ class SbandRadio(Radio):
         self._od_should_enable = should_enable
         self._sdr_rnode = _sdr_rnode
 
+        self.sdr_pwr = 0
         self._sdo_fault = 0
         self._timeout_start_time = 0
         self._send_timer = monotonic()
@@ -634,6 +635,7 @@ class SbandRadio(Radio):
         """send the commands to turn off the Transmitter and let the S-Band take more data."""
         succeeded = True
         succeeded and self._fault_tolerant_forced_sdo_write("sdr_power", None, 0)
+        self.sdr_pwr = 0
         # succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 0)
         self._frames_to_send = 0
         if not succeeded:
@@ -768,6 +770,8 @@ class SbandRadio(Radio):
             logger.error("Error sending frame to sband, got frame length greater than 1024 bytes.")
             return False
         attempts = 0
+        backoff = 0.3
+        _sdo_fault = 0
 
         while True:
             try:
@@ -777,18 +781,19 @@ class SbandRadio(Radio):
                     outfile.write(frame)
             except SdoError as e:
                 logger.error(f"failed to block transfer sdo write frame to sband: {e}")
-                self._fault_tolerant_lax_sdo_read_log("tx_data_statistics", "rx_bytes")
-                self._sdo_fault += 1
-                if self._sdo_fault >= self.SDO_FAULT_LIMIT:
-                    if attempts < 2:
-                        self._sdo_fault = 0
+                # self._fault_tolerant_lax_sdo_read_log("tx_data_statistics", "rx_bytes")
+                _sdo_fault += 1
+                if _sdo_fault >= self.SDO_FAULT_LIMIT:
+                    if attempts < 4:
+                        _sdo_fault = 0
                         attempts += 1
                         logger.error(f"reattempting SDO of frame to Sband. Attempts:{attempts}")
-                        time.sleep(0.31415) # ideally shift us off any PDOs
+                        time.sleep(3)
+                        backoff = 0.3
                         continue
-                    self._state = 0xFF
                     return False
-                time.sleep(0.07)
+                time.sleep(backoff)
+                backoff *= 2
             else:
                 logger.debug("Sent frame to S band SDR")
                 self._sdo_fault = 0
@@ -799,21 +804,29 @@ class SbandRadio(Radio):
     # customer facing interaction functions
     def send_frame(self, payload):
         """Just calls the private function."""
-        attempts = 0
-        while True:
-            result = self._fault_tolerant_forced_sdo_read("sdr_status", None)
-            if not result[1]:
-                if self.state == 0xFF:
-                    return
-            elif result[0] == 2:
-                break
-            else:
-                if result[0] == 0:
-                    self._fault_tolerant_forced_sdo_write("sdr_power", None, 1)
-                time.sleep(0.5)
-                attempts += 1
-                if attempts > 60:
-                    logger.error("SDR failed to set power to on after 30 second.")
+
+        if self.sdr_pwr != 1:
+            attempts = 0
+            backoff = 0.3
+            while True:
+                result = self._fault_tolerant_forced_sdo_read("sdr_status", None)
+                if not result[1]:
+                    if self.state == 0xFF:
+                        return
+                elif result[0] == 1:
+                    self.sdr_pwr = 1
+                    time.sleep(2)
+                    break
+                else:
+                    if result[0] == 0:
+                        self._fault_tolerant_forced_sdo_write("sdr_power", None, 1)
+                    time.sleep(backoff)
+                    backoff += 0.3
+                    attempts += 1
+                    if attempts > 20:
+                        logger.error("SDR failed to set power to on after 30 second.")
+                        break
+                    # todo: figure out payload downlink reporting
 
         self._fault_tolerant_forced_sdo_block_write_frame(payload)
 
