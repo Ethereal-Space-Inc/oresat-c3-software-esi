@@ -14,6 +14,7 @@ from oresat_c3.protocols.edl_packet import (
 from oresat_c3.protocols.sdls import SdlsInvalidHmacError
 from oresat_c3.protocols.uslp import TC_MIN_LEN, unpack_frame
 
+SCID = 0x4F53
 
 class TestEdlPacket(unittest.TestCase):
     """Test the EdlPacket."""
@@ -27,14 +28,14 @@ class TestEdlPacket(unittest.TestCase):
 
         payload = EdlCommandRequest(EdlCommandCode.TX_CTRL, (True,))
         edl_packet_req = EdlPacket(payload, self.seq_num, SRC_DEST_ORESAT)
-        edl_message_req = edl_packet_req.pack(self.hmac_key)
-        edl_packet_req2 = EdlPacket.from_frame(unpack_frame(edl_message_req), self.hmac_key)
+        edl_message_req = edl_packet_req.pack(SCID, self.hmac_key)
+        edl_packet_req2 = EdlPacket.from_frame(unpack_frame(edl_message_req, SCID), self.hmac_key)
         self.assertEqual(edl_packet_req, edl_packet_req2)
 
         payload = EdlCommandResponse(EdlCommandCode.TX_CTRL, (True,))
         edl_packet_res = EdlPacket(payload, self.seq_num, SRC_DEST_UNICLOGS)
-        edl_message_res = edl_packet_res.pack(self.hmac_key)
-        edl_packet_res2 = EdlPacket.from_frame(unpack_frame(edl_message_res), self.hmac_key)
+        edl_message_res = edl_packet_res.pack(SCID, self.hmac_key)
+        edl_packet_res2 = EdlPacket.from_frame(unpack_frame(edl_message_res, SCID), self.hmac_key)
         self.assertEqual(edl_packet_res, edl_packet_res2)
 
     def test_unpack_short_packet(self):
@@ -45,7 +46,7 @@ class TestEdlPacket(unittest.TestCase):
 
         # Test if EdlPacketError "Packet too short" exception is thrown
         with self.assertRaises(UslpInvalidRawPacketOrFrameLenError):
-            frame = unpack_frame(short_packet)
+            frame = unpack_frame(short_packet, SCID)
             EdlPacket.from_frame(frame, self.hmac_key)
 
     def test_unpack_invalid_fecf(self):
@@ -53,7 +54,7 @@ class TestEdlPacket(unittest.TestCase):
 
         payload = EdlCommandRequest(EdlCommandCode.TX_CTRL, (True,))
         edl_packet_req = EdlPacket(payload, self.seq_num, SRC_DEST_ORESAT)
-        edl_message_req = edl_packet_req.pack(self.hmac_key)
+        edl_message_req = edl_packet_req.pack(SCID, self.hmac_key)
 
         # Modifying FECF so that it is invalid
         edl_message_req = bytearray(edl_message_req)
@@ -62,7 +63,7 @@ class TestEdlPacket(unittest.TestCase):
 
         # Checking if UslpChecksumError exception is raised for the invalid FECF
         with self.assertRaises(UslpChecksumError):
-            frame = unpack_frame(edl_message_req)
+            frame = unpack_frame(edl_message_req, SCID)
             EdlPacket.from_frame(frame, self.hmac_key)
 
     def test_unpack_invalid_hmac(self):
@@ -71,9 +72,9 @@ class TestEdlPacket(unittest.TestCase):
         payload = EdlCommandRequest(EdlCommandCode.TX_CTRL, (True,))
         edl_packet_req = EdlPacket(payload, self.seq_num, SRC_DEST_ORESAT)
         invalid_hmac = b"\0x12" * 32
-        edl_message_req = edl_packet_req.pack(invalid_hmac)
+        edl_message_req = edl_packet_req.pack(SCID, invalid_hmac)
 
-        frame = unpack_frame(edl_message_req)
+        frame = unpack_frame(edl_message_req, SCID)
         with self.assertRaises(SdlsInvalidHmacError):
             EdlPacket.from_frame(frame, self.hmac_key)
 
@@ -90,4 +91,4 @@ class TestEdlPacket(unittest.TestCase):
 
         edl_packet_req.vcid = TestEnum.INVALID
         with self.assertRaises(IndexError and ValueError):
-            edl_packet_req.pack(self.hmac_key)
+            edl_packet_req.pack(SCID, self.hmac_key)

@@ -120,10 +120,11 @@ class Uplink(Thread):
     the socket.
     """
 
-    def __init__(self, address, hmac_key, sequence_number, bad_connection, delay):
+    def __init__(self, address, scid, hmac_key, sequence_number, bad_connection, delay):
         super().__init__(name=self.__class__.__name__, daemon=True)
         self.queue = SimpleQueue()
         self._address = address
+        self._scid = scid
         self._hmac_key = hmac_key
         self._sequence_number = sequence_number
         self._bad_connection = bad_connection
@@ -140,7 +141,7 @@ class Uplink(Thread):
                 continue  # simulate dropped packets
             print("--->", payload)
             packet = EdlPacket(payload, self._sequence_number, SRC_DEST_ORESAT, bypass=True)
-            message = packet.pack(self._hmac_key)
+            message = packet.pack(self._scid, self._hmac_key)
             uplink.send(message)
             print("Current sequence number:", self._sequence_number)
             self._sequence_number += 1
@@ -154,11 +155,12 @@ class Downlink(Thread):
     share the socket.
     """
 
-    def __init__(self, address, hmac_key, bad_connection):
+    def __init__(self, address, scid, hmac_key, bad_connection):
         super().__init__(name=self.__class__.__name__, daemon=True)
         self.source_queue = SimpleQueue()
         self.dest_queue = SimpleQueue()
         self._address = address
+        self._scid = scid
         self._hmac_key = hmac_key
         self._bad_connection = bad_connection
 
@@ -169,7 +171,7 @@ class Downlink(Thread):
         while True:
             message = downlink.recv(4096)
             try:
-                frame = unpack_frame(message)
+                frame = unpack_frame(message, self._scid)
             except UslpInvalidRawPacketOrFrameLenError:
                 continue
             if frame.header.vcid != EdlVcid.FILE_TRANSFER:
@@ -369,7 +371,7 @@ def main():
         default=0,
         help="edl sequence number, default 0",
     )
-    parser.add_argument("-s", "--buffer-size", type=int, default=950, help="file data buffer size")
+    parser.add_argument("-b", "--buffer-size", type=int, default=950, help="file data buffer size")
     parser.add_argument(
         "-m",
         "--hmac",
@@ -384,6 +386,12 @@ def main():
         help="Initiate a proxy put request instead of a normal one",
     )
     command.add_argument("-dr", "--directory", help="Request a directory listing, for example '.'")
+    parser.add_argument(
+        "-s",
+        "--scid",
+        default="",
+        help="Spacecraft ID in ascii, default OS",
+    )
 
     args = parser.parse_args()
 
@@ -408,15 +416,26 @@ def main():
     else:
         hmac_key = bytes(32)
 
+    if args.scid:
+        if len(args.scid) != 2:
+            print("Invalid scid, must be ascii string of 2 bytes")
+            sys.exit(1)
+        else:
+            scid_act = bytes.fromhex(args.scid)
+    else:
+        scid_act = 0x4F53
+
     uplink_address = (args.host, args.uplink_port)
 
     downlink_host = args.host if args.host in ["localhost", "127.0.0.1"] else ""
     downlink_address = (downlink_host, args.downlink_port)
 
     delay = args.loop_delay / 1000
-    up = Uplink(uplink_address, hmac_key, args.sequence_number, args.bad_connection, delay)
+    up = Uplink(
+        uplink_address, scid_act, hmac_key, args.sequence_number, args.bad_connection, delay
+    )
     up.start()
-    down = Downlink(downlink_address, hmac_key, args.bad_connection)
+    down = Downlink(downlink_address, scid_act, hmac_key, args.bad_connection)
     down.start()
 
     SOURCE_ID = ByteFieldU8(0)

@@ -35,6 +35,7 @@ from oresat_c3.services.node_manager import NodeManagerService
 from oresat_c3.subsystems.opd import OpdNodeState, OpdState
 
 HMAC = bytes(32)
+SCID = 0x4F53
 
 
 class NodeHeartbeatInfo(NamedTuple):
@@ -45,12 +46,12 @@ class NodeHeartbeatInfo(NamedTuple):
 
 def make_cmd(cmd: EdlCommandCode, values: tuple, q: SimpleQueue) -> TransferFrame:
     payload = EdlCommandRequest(cmd, values).pack()
-    frame = make_frame(payload, 0, 1, hmac_key=HMAC)
+    frame = make_frame(payload, SCID, 0, 1, hmac_key=HMAC)
     q.put(frame)
 
 
 def to_response(resp_raw: bytes) -> EdlCommandResponse:
-    return EdlPacket.from_frame(unpack_frame(resp_raw), HMAC).payload
+    return EdlPacket.from_frame(unpack_frame(resp_raw, SCID), HMAC).payload
 
 
 class TestEdl(unittest.TestCase):

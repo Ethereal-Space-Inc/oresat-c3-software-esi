@@ -32,6 +32,8 @@ class ChannelRouterService(Service):
         self._uplink_routes: dict[EdlVcid, SimpleQueue[TransferFrame]] = {}
         self._downlink_routes: dict[EdlVcid, SimpleQueue[bytes]] = {}
         self._last_clcw_time = 0.0
+        edl_rec = self.node.od["edl"]
+        self._scid = edl_rec["scid"]
 
     def on_loop(self) -> None:
         for vcid, dl in self._downlink_routes.items():
@@ -51,6 +53,7 @@ class ChannelRouterService(Service):
                 for clcw in self._get_all_clcw():
                     frame = make_frame(
                         payload=bytes(1),
+                        scid=self._scid.value,
                         vcid=EdlVcid.IDLE,
                         src_dest=SourceOrDestField.SOURCE,
                         control_word=clcw.pack(),
@@ -66,7 +69,7 @@ class ChannelRouterService(Service):
             return
 
         try:
-            frame = unpack_frame(message)
+            frame = unpack_frame(message, self._scid.value)
             vcid = frame.header.vcid
             if vcid in self._uplink_routes:
                 self._uplink_routes[vcid].put_nowait(frame)

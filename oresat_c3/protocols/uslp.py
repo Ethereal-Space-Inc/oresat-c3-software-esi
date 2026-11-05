@@ -18,8 +18,6 @@ from spacepackets.uslp.frame import (
 
 from .sdls import apply_sdls, get_sdls_header_len, get_sdls_len
 
-SPACECRAFT_ID = 0x4F53  # aka "OS" in ASCII
-
 PRIMARY_HEADER_LEN = 7
 DFH_LEN = 1
 FECF_LEN = 2
@@ -30,7 +28,7 @@ class UslpInvalidSpacecraftIdError(Exception):
     pass
 
 
-def unpack_frame(raw: bytes) -> TransferFrame:
+def unpack_frame(raw: bytes, scid: int) -> TransferFrame:
     """Unpack raw bytes into a valid TransferFrame
 
     Parameters
@@ -78,7 +76,7 @@ def unpack_frame(raw: bytes) -> TransferFrame:
     if len(raw) < TC_MIN_LEN:
         raise UslpInvalidRawPacketOrFrameLenError(f"Packet too short: {len(raw)}")
     frame = TransferFrame.unpack(raw, FrameType.VARIABLE, frame_props)
-    if frame.header.scid != SPACECRAFT_ID:
+    if frame.header.scid != scid:
         raise UslpInvalidSpacecraftIdError
 
     return frame
@@ -86,6 +84,7 @@ def unpack_frame(raw: bytes) -> TransferFrame:
 
 def make_frame(
     payload: bytes,
+    scid: int,
     vcid: int,
     src_dest: SourceOrDestField,
     hmac_key: Optional[bytes] = None,
@@ -143,7 +142,7 @@ def make_frame(
         frame_len += get_sdls_len(vcid)
 
     frame_header = PrimaryHeader(
-        scid=SPACECRAFT_ID,
+        scid=scid,
         map_id=0,
         vcid=vcid,
         src_dest=src_dest,

@@ -9,7 +9,7 @@ from oresat_c3.protocols.edl_packet import SRC_DEST_ORESAT, EdlVcid
 from oresat_c3.protocols.uslp import make_frame, unpack_frame
 
 HMAC_KEY = b"\x00" * 32
-
+SCID = 0x4F53
 
 class TestMakeFrameUnpackFrame(unittest.TestCase):
     """Tests for making and unpacking USLP frames."""
@@ -21,6 +21,7 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
         """Type-AD frame packs and unpacks with correct checksum and SDLS."""
         frame = make_frame(
             b"\x01\x02\x03",
+            SCID,
             EdlVcid.C3_COMMAND,
             SRC_DEST_ORESAT,
             hmac_key=HMAC_KEY,
@@ -28,7 +29,7 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
             sequence_number=5,
         )
         raw = self._pack(frame)
-        unpacked = unpack_frame(raw)
+        unpacked = unpack_frame(raw, SCID)
         self.assertEqual(unpacked.header.vcid, EdlVcid.C3_COMMAND)
         self.assertIsNotNone(unpacked.insert_zone)
         self.assertTrue(unpacked.tfdf.tfdz.startswith(b"\x01\x02\x03"))
@@ -37,6 +38,7 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
         """frame_len header field must equal total packed bytes minus one."""
         frame = make_frame(
             b"\x01\x02\x03",
+            SCID,
             EdlVcid.C3_COMMAND,
             SRC_DEST_ORESAT,
             hmac_key=HMAC_KEY,
@@ -49,6 +51,7 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
         """Type-AD frames must have SDLS header."""
         frame = make_frame(
             b"\x00",
+            SCID,
             EdlVcid.C3_COMMAND,
             SRC_DEST_ORESAT,
             hmac_key=HMAC_KEY,
@@ -60,6 +63,7 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
         """Type-BC frame (no SDLS)."""
         frame = make_frame(
             b"\x00",
+            SCID,
             EdlVcid.C3_COMMAND,
             SRC_DEST_ORESAT,
             vcf_count=None,
@@ -67,7 +71,7 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
             command=True,
         )
         raw = self._pack(frame)
-        unpacked = unpack_frame(raw)
+        unpacked = unpack_frame(raw, SCID)
         self.assertEqual(unpacked.header.vcid, EdlVcid.C3_COMMAND)
         self.assertIsNone(unpacked.insert_zone)
         self.assertEqual(unpacked.tfdf.tfdz, b"\x00")
@@ -76,6 +80,7 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
         """Type-BC (command) frames must not have an SDLS header."""
         frame = make_frame(
             b"\x00",
+            SCID,
             EdlVcid.C3_COMMAND,
             SRC_DEST_ORESAT,
             bypass=True,
@@ -87,6 +92,7 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
         """Type-BD frames must have an SDLS header."""
         frame = make_frame(
             b"\x00",
+            SCID,
             EdlVcid.C3_COMMAND,
             SRC_DEST_ORESAT,
             hmac_key=HMAC_KEY,
@@ -99,6 +105,7 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
         """Type-BD frame packs and unpacks correctly with SDLS."""
         frame = make_frame(
             b"\x01\x02",
+            SCID,
             EdlVcid.C3_COMMAND,
             SRC_DEST_ORESAT,
             hmac_key=HMAC_KEY,
@@ -107,7 +114,7 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
             sequence_number=7,
         )
         raw = self._pack(frame)
-        unpacked = unpack_frame(raw)
+        unpacked = unpack_frame(raw, SCID)
         self.assertEqual(unpacked.header.vcid, EdlVcid.C3_COMMAND)
         self.assertIsNotNone(unpacked.insert_zone)
         self.assertTrue(unpacked.tfdf.tfdz.startswith(b"\x01\x02"))
@@ -116,6 +123,7 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
         """BC frame_len field must equal total packed bytes minus one."""
         frame = make_frame(
             b"\x00",
+            SCID,
             EdlVcid.C3_COMMAND,
             SRC_DEST_ORESAT,
             bypass=True,
@@ -129,12 +137,13 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
         clcw = b"\x00\x00\x00\x00"
         frame = make_frame(
             b"\x00",
+            SCID,
             EdlVcid.IDLE,
             SRC_DEST_ORESAT,
             control_word=clcw,
         )
         raw = self._pack(frame)
-        unpacked = unpack_frame(raw)
+        unpacked = unpack_frame(raw, SCID)
         self.assertEqual(unpacked.header.vcid, EdlVcid.IDLE)
         self.assertIsNone(unpacked.insert_zone)
         self.assertEqual(unpacked.op_ctrl_field, clcw)
@@ -143,6 +152,7 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
         """Invalid checksum (FECF) of a Type-AD frame must raise UslpChecksumError."""
         frame = make_frame(
             b"\xde\xad",
+            SCID,
             EdlVcid.C3_COMMAND,
             SRC_DEST_ORESAT,
             hmac_key=HMAC_KEY,
@@ -151,12 +161,13 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
         raw = bytearray(self._pack(frame))
         raw[-1] ^= 0xFF
         with self.assertRaises(UslpChecksumError):
-            unpack_frame(bytes(raw))
+            unpack_frame(bytes(raw), SCID)
 
     def test_bc_invalid_fecf_raises(self):
         """Invalid checksum (FECF) of a Type-BC frame must raise UslpChecksumError."""
         frame = make_frame(
             b"\x00",
+            SCID,
             EdlVcid.C3_COMMAND,
             SRC_DEST_ORESAT,
             bypass=True,
@@ -165,11 +176,11 @@ class TestMakeFrameUnpackFrame(unittest.TestCase):
         raw = bytearray(self._pack(frame))
         raw[-1] ^= 0xFF
         with self.assertRaises(UslpChecksumError):
-            unpack_frame(bytes(raw))
+            unpack_frame(bytes(raw), SCID)
 
     def test_too_short_raises(self):
         """Frames shorter than TC_MIN_LEN must raise UslpInvalidRawPacketOrFrameLenError."""
         from oresat_c3.protocols.uslp import TC_MIN_LEN
 
         with self.assertRaises(UslpInvalidRawPacketOrFrameLenError):
-            unpack_frame(b"\x00" * (TC_MIN_LEN - 1))
+            unpack_frame(b"\x00" * (TC_MIN_LEN - 1), SCID)

@@ -61,7 +61,9 @@ class Link:
     hmac: EDL HMAC key
     """
 
-    def __init__(self, host: str, up_port: int, down_port: int, sequence_number: int, hmac: bytes):
+    def __init__(
+        self, host: str, up_port: int, down_port: int, sequence_number: int, scid: int, hmac: bytes
+    ):
         self._uplink = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._uplink.connect((host, up_port))
 
@@ -71,6 +73,7 @@ class Link:
         self.sent = 0
         self.echo = 0
         self.sequence_number = sequence_number
+        self.scid = scid
         self.hmac = hmac
         self.sent_times: OrderedDict[int, float] = OrderedDict()
         self.last = 0
@@ -83,7 +86,7 @@ class Link:
         self.sequence_number = self.sequence_number + 1 & 0xFFFF_FFFF
         request = EdlCommandRequest(EdlCommandCode.PING, (value,))
         message = EdlPacket(request, self.sequence_number, SRC_DEST_ORESAT, bypass=True).pack(
-            self.hmac
+            self.scid, self.hmac
         )
 
         self._uplink.send(message)
@@ -122,7 +125,7 @@ class Link:
             self._downlink.settimeout(t)
             response = self._downlink.recv(4096)
             try:
-                frame = unpack_frame(response)
+                frame = unpack_frame(response, self.scid)
             except UslpInvalidRawPacketOrFrameLenError:
                 continue
             if frame.header.vcid != EdlVcid.C3_COMMAND:

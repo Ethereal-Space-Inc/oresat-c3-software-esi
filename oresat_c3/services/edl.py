@@ -104,6 +104,7 @@ class EdlService(Service):
         self._edl_rejected_count_obj = edl_rec["rejected_count"]
         self._edl_cfdp_seq_count_obj = edl_rec["cfdp_seq_num"]
         self._last_edl_obj = edl_rec["last_timestamp"]
+        self._scid = edl_rec["scid"]
 
     def on_start(self) -> None:
         self._cfdp_source_handler.set_seq_num(self._edl_cfdp_seq_count_obj.value)
@@ -113,6 +114,7 @@ class EdlService(Service):
             self._cfdp_source_handler.get_seq_num,
             self._cfdp_source_handler.set_seq_num,
         )
+        logger.info(f"starting edl using scid {self._scid.value}")
 
     def __del__(self) -> None:
         # redefinition of the service destructor to handle the cfdp threads
@@ -222,7 +224,7 @@ class EdlService(Service):
     def _respond(self, vcid: EdlVcid, payload: Union[PduHolder, EdlCommandResponse]) -> None:
         try:
             res_packet = EdlPacket(payload, self._sequence_count, SRC_DEST_UNICLOGS)
-            res_message = res_packet.pack(self._hmac_key)
+            res_message = res_packet.pack(self._scid.value, self._hmac_key)
         except (EdlCommandError, EdlPacketError, ValueError) as e:
             logger.exception(f"EDL response generation raised: {e}")
             return
@@ -287,7 +289,6 @@ class EdlService(Service):
         while not self.payload_cfdp_tm_queue.empty():
             next_tm = self.payload_cfdp_tm_queue.get(False)
             self._respond(EdlVcid.PAYLOAD_FILE_DOWNLINK, next_tm.pdu)
-
 
     def _handle_pdu(self, pdu: AbstractFileDirectiveBase):
         packet_dest = get_packet_destination(pdu)

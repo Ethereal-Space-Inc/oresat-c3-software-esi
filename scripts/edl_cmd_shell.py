@@ -31,7 +31,7 @@ from spacepackets.uslp import BypassSequenceControlFlag, ProtocolCommandFlag
 from spacepackets.uslp.defs import UslpInvalidRawPacketOrFrameLenError
 from spacepackets.uslp.frame import FrameType
 
-from oresat_c3.protocols.uslp import SPACECRAFT_ID, make_frame, unpack_frame
+from oresat_c3.protocols.uslp import make_frame, unpack_frame
 
 sys.path.insert(0, os.path.abspath(".."))
 
@@ -46,7 +46,13 @@ class EdlCommandShell(Cmd):
     prompt = "> "
 
     def __init__(
-        self, host: str, uplink_port: int, downlink_port: int, hmac_key: bytes, seq_num: int
+        self,
+        host: str,
+        uplink_port: int,
+        downlink_port: int,
+        hmac_key: bytes,
+        seq_num: int,
+        scid: int
     ):
         super().__init__()
 
@@ -66,7 +72,8 @@ class EdlCommandShell(Cmd):
         self._downlink_socket.bind(self._downlink_address)
         self._downlink_socket.settimeout(self._timeout)
 
-        self._gvcid = Gvcid(tfvn=0xC, scid=SPACECRAFT_ID, vcid=EdlVcid.C3_COMMAND)
+        self._scid = scid
+        self._gvcid = Gvcid(tfvn=0xC, scid=scid, vcid=EdlVcid.C3_COMMAND)
         self._fop1 = Fop1(self._gvcid, timer_initial_value=3)
         self._fop1_req_id = 0
         self._last_clcw: dict[int, ControlWord] = {}
@@ -90,6 +97,7 @@ class EdlCommandShell(Cmd):
                 bypass = req.bypass_flag == BypassSequenceControlFlag.EXPEDITED_QOS
                 frame = make_frame(
                     payload=req.tfdf,
+                    self=self._scid,
                     vcid=EdlVcid.C3_COMMAND,
                     src_dest=SRC_DEST_ORESAT,
                     hmac_key=self._hmac_key,
@@ -130,7 +138,7 @@ class EdlCommandShell(Cmd):
             while True:
                 raw = self._downlink_socket.recv(1024)
                 try:
-                    frame = unpack_frame(raw)
+                    frame = unpack_frame(raw, self._scid)
                 except UslpInvalidRawPacketOrFrameLenError:
                     continue
                 if frame.header.vcid == EdlVcid.IDLE and frame.op_ctrl_field:
@@ -164,6 +172,7 @@ class EdlCommandShell(Cmd):
             else:
                 frame = make_frame(
                     payload=tfdz,
+                    scid=self._scid,
                     vcid=EdlVcid.C3_COMMAND,
                     src_dest=SRC_DEST_ORESAT,
                     hmac_key=self._hmac_key,
@@ -181,7 +190,7 @@ class EdlCommandShell(Cmd):
                     while True:
                         raw = self._downlink_socket.recv(1024)
                         try:
-                            frame = unpack_frame(raw)
+                            frame = unpack_frame(raw, self._scid)
                         except UslpInvalidRawPacketOrFrameLenError:
                             continue
                         if frame.header.vcid == EdlVcid.IDLE and frame.op_ctrl_field:
@@ -204,7 +213,7 @@ class EdlCommandShell(Cmd):
                             except socket.timeout:
                                 break
                             try:
-                                frame = unpack_frame(raw)
+                                frame = unpack_frame(raw, self._scid)
                             except UslpInvalidRawPacketOrFrameLenError:
                                 continue
                             if frame.header.vcid == EdlVcid.IDLE and frame.op_ctrl_field:
@@ -219,7 +228,7 @@ class EdlCommandShell(Cmd):
                     except socket.timeout:
                         break
                     try:
-                        frame = unpack_frame(raw)
+                        frame = unpack_frame(raw, self._scid)
                     except UslpInvalidRawPacketOrFrameLenError:
                         continue
                     if frame.header.vcid == EdlVcid.IDLE and frame.op_ctrl_field:
@@ -383,7 +392,7 @@ class EdlCommandShell(Cmd):
                 print("Timeout: no CLCW confirmation received")
                 return
             try:
-                frame = unpack_frame(raw)
+                frame = unpack_frame(raw, self._scid)
             except UslpInvalidRawPacketOrFrameLenError:
                 continue
             if frame.header.vcid != EdlVcid.IDLE or not frame.op_ctrl_field:
@@ -895,6 +904,12 @@ def main():
         default="",
         help="edl hmac, must be 32 bytes, default all zero",
     )
+    parser.add_argument(
+        "-s",
+        "--scid",
+        default="",
+        help="Spacecraft ID in ascii, default OS",
+    )
     args = parser.parse_args()
 
     if args.hmac:
@@ -906,8 +921,17 @@ def main():
     else:
         hmac_key = b"\x00" * 32
 
+    if args.scid:
+        if len(args.scid) != 2:
+            print("Invalid scid, must be ascii string of 2 bytes")
+            sys.exit(1)
+        else:
+            scid_act = bytes.fromhex(args.scid)
+    else:
+        scid_act = 0x4F53
+
     shell = EdlCommandShell(
-        args.host, args.uplink_port, args.downlink_port, hmac_key, args.sequence_number
+        args.host, args.uplink_port, args.downlink_port, hmac_key, args.sequence_number, scid_act
     )
 
     try:

@@ -81,7 +81,7 @@ class EdlPacket:
             and self.payload == other.payload
         )
 
-    def pack(self, hmac_key: bytes, control_word: Optional[bytes] = None) -> bytes:
+    def pack(self, scid: int, hmac_key: bytes, control_word: Optional[bytes] = None) -> bytes:
         """
         Pack the EDL packet.
 
@@ -100,6 +100,7 @@ class EdlPacket:
 
         frame = make_frame(
             payload=payload_raw,
+            scid=scid,
             vcid=self.vcid.value,
             src_dest=self.src_dest,
             sequence_number=self.seq_num,
