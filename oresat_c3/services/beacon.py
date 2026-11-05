@@ -4,6 +4,7 @@ Beacon Service
 Handles making the beacon packets.
 """
 
+import os
 import zlib
 from time import sleep, time
 
@@ -129,12 +130,18 @@ class BeaconService(Service):
         send_time = (len(packet) + 200) / 45000.0 * 8  # hardcoded for now. TODO: FIX
         duration = self._leop_timeout_obj.value / 1000.0
         send_attempts = int(duration / send_time) + 1
-        #TODO: Change this to use random noise instead of full beacons after the first one.
+
+        prepost_amble = (self._src_callsign + self.node.od["edl"]["scid"]).encode("utf-8")
+        noise = os.urandom(len(packet) - len(prepost_amble) * 2)
+        beacon_noise = prepost_amble + noise + prepost_amble
 
         self._ts = time()
-        for i in range(send_attempts):
-            self._radios_service.send_beacon(packet)
-            sleep(send_time)
+
+        self._radios_service.send_beacon(packet)
+        if not self._radios_service.downlink_through_sband():
+            for i in range(send_attempts):
+                self._radios_service.send_beacon(beacon_noise)
+                sleep(send_time)
 
     def _on_read_last_ts(self) -> int:
         """SDO read callback to get the SCET timestamp of the last beacon."""

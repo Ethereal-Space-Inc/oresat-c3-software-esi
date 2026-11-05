@@ -185,7 +185,7 @@ class RadiosService(Service):
         message : bytes
             The message to send as a byte string.
         """
-        if self._downlink_through_sband():
+        if self.downlink_through_sband():
             self.try_send_sband(message)
             logger.debug(f"Sent EDL downlink packet through sband: {message.hex(sep=' ')}")
         else:
@@ -206,7 +206,7 @@ class RadiosService(Service):
             The beacon to beacon.
         """
 
-        if self._downlink_through_sband():
+        if self.downlink_through_sband():
             self.try_send_sband(message)
             logger.debug(f"Sent beacon downlink packet through sband: {message.hex(sep=' ')}")
         else:
@@ -235,7 +235,7 @@ class RadiosService(Service):
         return message
 
     #### SBAND HANDLING
-    def _downlink_through_sband(self) -> bool:
+    def downlink_through_sband(self) -> bool:
         """Can/should we downlink through the sband?"""
         if self.sband is None:
             return False
