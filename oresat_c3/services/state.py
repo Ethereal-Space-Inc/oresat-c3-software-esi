@@ -315,7 +315,7 @@ class StateService(Service):
             if obj.data_type == canopen.objectdictionary.DOMAIN:
                 continue
 
-            if obj.name.startswith("crypto_key"):
+            if obj.name.startswith("crypto_key") or obj.name.startswith("scid"):
                 raw = obj.value
                 raw_len = len(obj.default)
                 self._fram.write(offset, raw)
