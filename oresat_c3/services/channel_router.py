@@ -5,7 +5,7 @@ from time import monotonic
 
 from ccsds_cop.cop_1 import ControlWord, CopService
 from ccsds_cop.cop_1.farm import Farm1
-from olaf import Service, logger
+from olaf import MasterNode, Service, logger
 from spacepackets.uslp import TransferFrame
 from spacepackets.uslp.defs import UslpChecksumError
 from spacepackets.uslp.frame import FrameType
@@ -25,13 +25,20 @@ class ChannelRouterService(Service):
     valid frames into the appropriate queue.
     """
 
-    def __init__(self, radios_service: RadiosService, cop_service: CopManagerService):
+    def __init__(
+        self,
+        radios_service:
+        RadiosService,
+        cop_service:CopManagerService
+    ):
         super().__init__()
         self._radios_service = radios_service
         self._cop_service = cop_service
         self._uplink_routes: dict[EdlVcid, SimpleQueue[TransferFrame]] = {}
         self._downlink_routes: dict[EdlVcid, SimpleQueue[bytes]] = {}
         self._last_clcw_time = 0.0
+
+    def on_start(self):
         edl_rec = self.node.od["edl"]
         self._scid = edl_rec["scid"]
 
