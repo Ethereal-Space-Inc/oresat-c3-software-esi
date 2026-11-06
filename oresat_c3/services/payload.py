@@ -21,7 +21,7 @@ from cfdppy.mib import (
     RemoteEntityConfigTable,
 )
 from cfdppy.request import PutRequest
-from olaf import Service, logger
+from olaf import Service, logger, MasterNode
 from oresat_configs.constants import Mission
 from spacepackets.cfdp import (
     ChecksumType,
@@ -89,6 +89,7 @@ class PayloadService(Service):
                 self.node.fwrite_cache,
                 self._power_indicatior_event,
                 self._mock,
+                self.node
             )
             self._downlink_handler = OsirisDownlink(
                 self.node.fread_cache,
@@ -169,8 +170,9 @@ class PayloadService(Service):
         )
 
     def downlink_now(self, val: bool):
-        self._downlink_thread = Thread(target = self._downlink_handler.handle_downlink)
-        self._downlink_thread.start()
+        if self._radios.sband is not None:
+            self._downlink_thread = Thread(target = self._downlink_handler.handle_downlink)
+            self._downlink_thread.start()
 
 class BeeconHandler:
     # Beecon state pseudoenum:
@@ -349,6 +351,7 @@ class OsirisHandler:
         read_store: CacheStore,
         pwr_event: Event,
         mock: bool,
+        node: MasterNode
     ):
         self._state = in_state
         self._node_mgr = node_mgr
@@ -356,8 +359,10 @@ class OsirisHandler:
         self._pwr_event = pwr_event
         self._file_register = file_register
         self._mock = mock
+        self._node = node
         self._timeout = 0
         self._last_state_val = 0
+        self._ppp_proc = None
 
         if self._state.value > 1:
             self._state.value = 1
@@ -482,7 +487,7 @@ class OsirisHandler:
 
     def _set_bootstate(self, new_state: int) -> bool:
         try:
-            self.node.sdo_write("osiris_sci", 0x4001, 0x2, new_state)
+            self._node.sdo_write("osiris_sci", 0x4001, 0x2, new_state)
         except SdoError as e:
             logger.error(f"failed to send sdo command : {e}")
             return False
@@ -490,7 +495,7 @@ class OsirisHandler:
 
     def _get_bootstate(self, new_state: int) -> int:
         try:
-            value = self.node.sdo_read("osiris_sci", 0x4001, 0x2)
+            value = self._node.sdo_read("osiris_sci", 0x4001, 0x2)
         except SdoError as e:
             logger.error(f"failed to send sdo command : {e}")
             return -1

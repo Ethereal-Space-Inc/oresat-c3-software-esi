@@ -11,7 +11,7 @@ from typing import BinaryIO, Optional
 import fastcrc.crc32
 from cfdppy.exceptions import ChecksumNotImplemented, SourceFileDoesNotExist
 from cfdppy.filestore import FilestoreResult, VirtualFilestore
-from olaf import OreSatFile, OreSatFileCache
+from olaf import OreSatFile, OreSatFileCache, logger
 from spacepackets.cfdp import NULL_CHECKSUM_U32, ChecksumType
 
 
@@ -52,6 +52,8 @@ class CacheStore(VirtualFilestore, OreSatFileCache):
         If we run a command to create a tar archive, the cachestore doesn't realize that we've made
         a new file.
         """
+        self._data = []
+
         with self._lock:
             for f in listdir(self._dir):
                 try:
@@ -59,6 +61,7 @@ class CacheStore(VirtualFilestore, OreSatFileCache):
                     self._data.append(oresat_file)
                 except Exception:  # pylint: disable=W0718
                     remove(self._dir + f)  # invalid file name
+                    logger.info(f"removed file {f} from {self._dir}")
             self._data = sorted(self._data)
 
     def file_exists(self, path: Path) -> bool:

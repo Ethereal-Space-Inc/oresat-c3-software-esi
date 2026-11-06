@@ -114,7 +114,7 @@ class EdlService(Service):
             self._cfdp_source_handler.get_seq_num,
             self._cfdp_source_handler.set_seq_num,
         )
-        logger.info(f"starting edl using scid {self._scid.value}")
+        logger.info(f"starting edl using scid {self._scid.value.to_bytes(2).decode("utf-8")}")
 
     def __del__(self) -> None:
         # redefinition of the service destructor to handle the cfdp threads

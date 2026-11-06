@@ -170,7 +170,7 @@ def main():
     edl_service = EdlService(app.node, node_mgr_service, beacon_service, channel_router_service, node_flasher_service)  # noqa: E501
     adcs_mgr_service = ADCSManager()
     mdb_service = MissionDatabaseService(node_mgr_service)
-    payload_service = PayloadService(radios_service, edl_service, node_mgr_service, config.mission, mock_hw == "all")  # noqa: E501
+    payload_service = PayloadService(radios_service, edl_service, node_mgr_service, config.mission, mock_hw)  # noqa: E501
 
     app.add_service(state_service)  # add state first to restore state from F-RAM
     app.add_service(radios_service)

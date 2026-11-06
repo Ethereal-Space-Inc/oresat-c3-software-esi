@@ -5,7 +5,7 @@ from time import monotonic
 
 from ccsds_cop.cop_1 import ControlWord, CopService
 from ccsds_cop.cop_1.farm import Farm1
-from olaf import MasterNode, Service, logger
+from olaf import Service, logger
 from spacepackets.uslp import TransferFrame
 from spacepackets.uslp.defs import UslpChecksumError
 from spacepackets.uslp.frame import FrameType

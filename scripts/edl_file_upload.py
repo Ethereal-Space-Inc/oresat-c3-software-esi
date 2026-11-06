@@ -371,7 +371,7 @@ def main():
         default=0,
         help="edl sequence number, default 0",
     )
-    parser.add_argument("-b", "--buffer-size", type=int, default=950, help="file data buffer size")
+    parser.add_argument("-f", "--buffer-size", type=int, default=950, help="file data buffer size")
     parser.add_argument(
         "-m",
         "--hmac",

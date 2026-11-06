@@ -131,13 +131,13 @@ class BeaconService(Service):
         duration = self._leop_timeout_obj.value / 1000.0
         send_attempts = int(duration / send_time) + 1
 
-        prepost_amble = (
-            "_" + self._src_callsign + "_" + self.node.od["edl"]["scid"] + "_"
-        ).encode("utf-8")
+        logger.warning(self.node.od["edl"]["scid"].value)
+        prepost_amble = (" "+self._src_callsign+"_").encode("utf-8")
+        prepost_amble += self.node.od["edl"]["scid"].value.to_bytes(2) + " ".encode("utf-8")
         if len(packet) > len(prepost_amble) * 2:
             noise = os.urandom(len(packet) - len(prepost_amble) * 2)
         else:
-            noise = ""
+            noise = bytes(0)
         beacon_noise = prepost_amble + noise + prepost_amble
 
         self._ts = time()
