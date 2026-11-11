@@ -219,3 +219,7 @@ class CacheStore(VirtualFilestore, OreSatFileCache):
                 current = crc_func(self.read_data(file_path, current_offset, read_len), current)
             current_offset += read_len
         return struct.pack("!I", current)
+
+    @property
+    def data(self):
+        return self._data

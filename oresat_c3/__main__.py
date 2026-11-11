@@ -31,8 +31,9 @@ from .services.node_manager import NodeManagerService
 from .services.payload import PayloadService
 from .services.radios import RadiosService
 from .services.state import StateService
+#adding temp services to test
+from .services.time_sync import TimeSyncService
 from .subsystems.rtc import set_system_time_to_rtc_time
-
 
 class InterceptHandler(logging.Handler):
     def emit(self, record):
@@ -156,6 +157,7 @@ def main():
 
     # The C3 needs a special OreSatFileCache that can speak CFDP
     app.node._fwrite_cache = CacheStore(app.node.fwrite_cache.dir)  # pylint: disable=W0212
+    app.node._fread_cache = CacheStore(app.node.fread_cache.dir)  # pylint: disable=W0212
 
     app.od["versions"]["sw_version"].value = __version__
 
@@ -164,11 +166,11 @@ def main():
     radios_service = RadiosService(node_mgr_service, mock_hw)
     beacon_service = BeaconService(config.beacon_def, config.leop_beacon_def, radios_service)
     node_flasher_service = NodeFlasherService(app.node.fwrite_cache.dir, node_mgr_service)
+    #temporarily adding time_sync_service for testing
+    time_sync_service = TimeSyncService(node_mgr_service, mock_hw)
     cop_service = CopManagerService()
     channel_router_service = ChannelRouterService(radios_service, cop_service)
-    edl_service = EdlService(
-        app.node, node_mgr_service, beacon_service, channel_router_service, node_flasher_service
-    )
+    edl_service = EdlService(app.node, node_mgr_service, beacon_service, channel_router_service, node_flasher_service)  # noqa: E501
     adcs_mgr_service = ADCSManager()
     mdb_service = MissionDatabaseService(node_mgr_service)
     payload_service = PayloadService(node_mgr_service, config.mission, mock_hw == "all")
@@ -182,6 +184,8 @@ def main():
     app.add_service(node_mgr_service)
     app.add_service(adcs_mgr_service)
     app.add_service(node_flasher_service)
+    #temporarily adding time_sync_service for testing
+    app.add_service(time_sync_service)
     app.add_service(mdb_service)
     app.add_service(payload_service)
 

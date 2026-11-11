@@ -7,11 +7,10 @@ Handles interfacing with the radio driver daemon.
 import socket
 import struct
 import time
-from math import ceil
 from queue import SimpleQueue
 from time import monotonic
 
-from canopen.objectdictionary import ODVariable
+from canopen.objectdictionary import ObjectDictionary, ODVariable
 from canopen.sdo.exceptions import SdoError
 from gpiod.line import Value
 from olaf import MasterNode, Service, logger
@@ -107,10 +106,20 @@ class RadiosService(Service):
         self._sband_timeout = self.node.od["sdr_ctrl"]["enable_timeout"]
         self._sband_status = self.node.od["sdr_ctrl"]["status"]
         self.node.add_sdo_callbacks("sdr_ctrl", "should_enable", None, self._sband_should_enable_cb)
+        self.node.add_sdo_callbacks("sdr_ctrl", "reset", None, self._sband_reset_cb)
+
+        self.sband_lock = False
 
         if "sdr" in self.node._od_db:  # not self._mock_hw and
             logger.info("creating sband radio class")
-            self.sband = SbandRadio(self.node, self._node_mgr, self._sband_status)
+            self.sband = SbandRadio(
+                self.node,
+                self._node_mgr,
+                self._sband_status,
+                self._sband_timeout,
+                self._sband_enable,
+                self.node.remote_nodes["sdr"]
+            )
         else:
             self.sband = None
 
@@ -129,8 +138,7 @@ class RadiosService(Service):
             self.lband.rf_reset()
             self.node.od["lband"]["synth_relock_count"].value = self.lband.rf_reset_count
 
-        if self.sband is not None and (self._sband_enable.value or self.sband.state != 0):
-            self._handle_sband()
+        self._handle_sband()
 
         if recv := self._recv_edl_request():
             self.recv_queue.put(recv)
@@ -227,7 +235,6 @@ class RadiosService(Service):
         return message
 
     #### SBAND HANDLING
-
     def _downlink_through_sband(self) -> bool:
         """Can/should we downlink through the sband?"""
         if self.sband is None:
@@ -238,70 +245,44 @@ class RadiosService(Service):
         """Turns on or off the sband (if it exists) based on passed value"""
         if self.sband is None:
             return
+        self.sband.state_machine()
         if value:
-            logger.info("Started Sband bootup process.")
-            self.sband.enable()
-            self._sband_timeout_timestamp = monotonic() + self._sband_timeout.value
+            logger.info("Started S band SDR bootup process.")
         else:
-            self.sband.disable()
-            self._sband_timeout_timestamp = 0
-            logger.info("Disabled Sband")
+            logger.info("Disabled S band SDR")
+
+    def _sband_reset_cb(self, value: bool) -> None:
+        """Turns on or off the sband (if it exists) based on passed value"""
+        if self.sband is None:
+            return
+        self.sband.rf_reset()
 
     def _handle_sband(self) -> None:
         """Don't like this function. Should work for now."""
         if self.sband is None:
             return
-
-        if not self._sband_enable.value and self.sband._state:
-            self._sband_enable.value = False
-            # I don't think this will auto call the enable callback. TODO: confirm this.
-            self._sband_should_enable_cb(False)
-            return
-
-        if self._sband_enable.value and not self.sband.is_rf_ok():
-            if self.sband.state == 0xFF:
-                self._sband_enable.value = False
-                # I don't think this will auto call the enable callback. TODO: confirm this.
-                self._sband_should_enable_cb(False)
-                return
-            self.sband.enable()
-
-        if self._sband_timeout_timestamp < monotonic():
-            logger.info("Sband timeout reached.")
-            self._sband_enable.value = False
-            # I don't think this will auto call the enable callback. TODO: confirm this.
-            self._sband_should_enable_cb(False)
-            return
-        # this function has 3 instances of code reuse. Bad. That should be fixed.
+        self.sband.state_machine()
 
         if (
-            self._sband_ready_at < monotonic()
+            self.sband.can_send_now()
             and not self.sband_queue.empty()
             and not self.sband_lock
         ):
             self._send_queued()
-
-        # if we have sent frames to the sdr and it has been 1 second since the last frame, downlink.
-        if self._sband_send_time > 0 and self.last_frame + 1 > monotonic():
-            self.force_sband_send()
-
-    def force_sband_send(self) -> None:
-        """Send the cmd to start sending data, and compute the time after which we will be done"""
-        self.sband.send_queued_messages()
-        self._sband_ready_at = monotonic() + self._sband_send_time
-        self._sband_send_time = 0
 
     def try_send_sband(self, message: bytes) -> None:
         """
         Function to try to send bytes to sband. If the sband is currently busy, send the bytes to
         the queue instead.
         """
-        if self._sband_ready_at > monotonic():
+        if not self.sband.can_send_now():
+            logger.debug("putting frame for sband in queue.")
             self.sband_queue.put(message)
         else:
             ### BAD. SHOULD TIMEOUT.
             while self.sband_lock:
                 time.sleep(0.033)
+            logger.debug("sending frame to sband directly.")
             if not self.sband_queue.empty():
                 self._send_queued()
             self._send_on_sband(message)
@@ -314,39 +295,25 @@ class RadiosService(Service):
         if self.sband is None:
             return
         try:
-            sband_rnode = self.node.remote_nodes["sdr"]
-            with sband_rnode.sdo['tx_data'].open(
-                'wb', size=len(message), block_transfer=True
-            ) as outfile:
-                outfile.write(message)
-                self._add_sband_time(len(message))
-                self.last_frame = monotonic()
+            self.sband.send_frame(message)
         except SdoError as e:
             logger.error(f"failed to send data to sband: {e}")
-
-    def _add_sband_time(self, msg_len: int) -> None:
-        """
-        Computes and adds the est time that the sband will take to finish.
-        SDR sends fixed size frames with payload size ~1097 octets. We will be using data rate
-        675000 spSec / 2 spSym, so 675000 bps.
-        """
-        if msg_len < 1097:
-            self._sband_send_time += 1275 / 675000
-        else:
-            frames = ceil(msg_len / 1097)
-            self._sband_send_time += frames * (1275 / 675000)
 
     def _send_queued(self) -> None:
         self.sband_lock = True
         try:
             while not self.sband_queue.empty():
                 frame = self.sband_queue.get()
-                self._send_on_sband(frame)
+                self.sband.send_frame(frame)
+                logger.debug(f"sent queued frame to sband. remaining: {self.sband_queue.qsize}")
         except Exception as e:
             self.sband_lock = False
             self.sband_queue.queue.clear()
             logger.error(f"failed to send all elements of the sband queue: {e}")
         self.sband_lock = False
+
+    def force_sband_send(self):
+        self.sband.send_data_now()
 
 
 class Radio:
@@ -505,111 +472,362 @@ class SbandRadio(Radio):
     # 4: graceful shutdown.
     # 255: error.
 
+    # The desired samples per second and sample rate for the SBand.
+    SET_SAMPLES = 2
+    SET_RATE = 675000
+    MARGIN = 2
+
     SDO_FAULT_LIMIT = 5  # number of failed sdos before going to 0xFF state.
 
-    def __init__(self, node: MasterNode, node_mgr: NodeManagerService, status: ODVariable):
-        """Request gpio."""
+    def __init__(
+        self,
+        node: MasterNode,
+        node_mgr: NodeManagerService,
+        status: ODVariable,
+        timeout: ODVariable,
+        should_enable: ODVariable,
+        _sdr_rnode: ObjectDictionary
+    ):
+        """Initialization."""
         super().__init__()
         self._node = node
         self._node_mgr = node_mgr
         self._state = 0
         self._od_status = status
+        self._od_timeout = timeout
+        self._od_should_enable = should_enable
+        self._sdr_rnode = _sdr_rnode
 
-    def enable(self) -> None:
-        """State machine for the bootup process."""
+        self._sdo_fault = 0
+        self._timeout_start_time = 0
+        self._send_timer = monotonic()
+        self._frames_to_send = 0
+        self._last_frame = 0
+
+    def state_machine(self):
+        """State machine for the Sband. States are defined above."""
+        if not self._od_should_enable.value and self._state != 0:
+            self._state = 4
+
+        # would be really nice if python had switch statements.
         if self._state == 0:
+            self._off()
+        elif self._state == 1: # Turn on the sband.
+            self._boot()
+        elif self._state == 2:
+            self._on_idle()
+        elif self._state == 3:
+            self._on_active()
+        elif self._state == 4:
+            self._disable()
+        elif self._state == 0xFF:
+            self._fault()
+
+    # State machine functions
+    def _off(self):
+        """If the sdr is on, turn it off"""
+        if self._od_should_enable.value:
+            self._state = 1
+
+        node_status = self._node_mgr.node_status("sdr")
+        if node_status != 0 and node_status != 0xFF and node_status != 4:
+            logger.info("Turning off SDR due to state 0.")
+            self._sdo_fault = 0 # we shouldn't error if we're trying to turn it off.
+            self._fault_tolerant_lax_sdo_write("tx_send_cache", None, 0)
+            self._fault_tolerant_lax_sdo_write("sdr_power", None, 0)
+            self._sdo_fault = 0
+            self._node_mgr.disable("sdr")
+
+    def _boot(self):
+        """turns on the sband until it heartbeats and has been configured"""
+        node_status = self._node_mgr.node_status("sdr")
+        logger.debug(f"nodemgr status of sdr: {node_status}.")
+        if node_status == 0:
             logger.debug("telling nodemgr to turn on sdr.")
             self._node_mgr.enable("sdr")
+            self._timeout_start_time = monotonic()
             self._state = 1
             self._sdo_fault = 0
-
-        elif self._state == 1:
-            node_status = self._node_mgr.node_status("sdr")
-            logger.debug(f"nodemgr status of sdr: {node_status}.")
-            if node_status == 2:  # The sdr is powered on.
-                self._send_start_cmd()
-                self._state = 2
-            elif node_status == 0xFF:  # dead
-                self._state = 0xFF
-                self.status.value = self._state
-                self.disable()
-                logger.warning("sband handler was told that sdr is dead.")
-
-        elif self._state == 2:
-            val = self._get_sdr_status()
-            if val == 0:
-                logger.info("resending power on cmd to sdr.")
-                self._send_start_cmd()
-            elif val == 2:
-                self._state = 3
-            elif val == 0xFF:
-                self._state = 0xFF
-                self.status.value = self._state
-                self.disable()
-                logger.warning("sband handler sdoread error from sdr.")
-
-        else:
-            logger.warning(f"Sband radio enable called with invalid state: {self._state}.")
+        elif node_status == 2:  # The sdr is powered on. Configure and move to state 2.
+            self._configure()
+            self._reset()
+            self._state = 2
+        elif node_status == 0xFF:  # dead
+            self.disable()
             self._state = 0xFF
+            self.status.value = self._state
+            logger.warning("sband handler was told that sdr is dead.")
 
-        time.sleep(0.25)
+    def _on_idle(self):
+        """Recieve frames from other services. Once a timeout occurs or a the
+        radios.force_sband_send() function is called, create a new timeout for the sband actually
+        downlinking the sent information."""
+        if self._last_frame + 1 < monotonic() and self._frames_to_send != 0:
+            self.send_data_now()
 
-    def disable(self) -> None:
-        self._state = 4
+        if self._timeout_start_time + self._od_timeout.value < monotonic():
+            self._od_should_enable.value = False
+            self._state = 4
+
+    def _on_active(self):
+        """Wait for the send timer to run out."""
+        if self._send_timer < monotonic():
+            self._reset()
+            self._state = 2
+
+    def _disable(self) -> None:
+        """Turn off the sband."""
+        logger.info("Shutting down s-band gracefully")
+        self._sdo_fault = 0 # we shouldn't error if we're trying to turn it off.
+        self._fault_tolerant_lax_sdo_write("tx_send_cache", None, 0)
+        self._fault_tolerant_lax_sdo_write("sdr_power", None, 0)
         self._sdo_fault = 0
-        self._shutdown()
+        self._node_mgr.disable("sdr")
+        time.sleep(2) # give the nodemanager time to mark it as off before state 0 kills it again.
         self._state = 0
 
-    def _shutdown(self) -> None:
-        self._send_stop_cmd()
-        time.sleep(5)
-        self._node_mgr.disable("sdr")
+    def _fault(self) -> None:
+        """Turn off the sband. Do not move from state 0xFF unless reset."""
+        node_status = self._node_mgr.node_status("sdr")
+        if node_status != 0 and node_status != 0xFF and node_status != 4:
+            logger.info("Turning off SDR due to state 0xFF.")
+            self._node_mgr.disable("sdr")
 
-    # fault tolerant sdo functions.
-    def _send_start_cmd(self) -> None:
+    # Helper functions to run several SDO commands in series.
+    def _configure(self):
+        """
+        Sets the configuration in the SDR.
+        If it fails, keep trying until we reach a limt or wesucceed.
+        """
+        # self._node.sdo_write("sdr", "tx_settings", "scrambler_enabled", 0)
+        # self._node.sdo_write("sdr", "tx_settings", "idle_enabled", 0)
+        # self._node.sdo_write("sdr", "tx_settings", "rs_enabled", 1)
+
+        samples = self._fault_tolerant_forced_sdo_read("tx_settings", "samples_per_symbol")
+        if samples[1] and (samples[0] != self.SET_SAMPLES):
+            logger.info(f"Setting sdr samples per symbol to {self.SET_SAMPLES} from {samples}")
+            self._fault_tolerant_forced_sdo_write(
+                "tx_settings",
+                "samples_per_symbol",
+                self.SET_SAMPLES
+            )
+        elif not samples[1]:
+            self._state = 0xFF
+            logger.error("Sband SDR driver failed during _configure in samples per symbol")
+
+        sample_rate = self._fault_tolerant_forced_sdo_read("tx_settings", "sampling_rate")
+        if sample_rate[1] and (sample_rate[0] != self.SET_RATE):
+            logger.info(f"Setting sdr sample_rate to {self.SET_RATE} from {sample_rate}")
+            self._fault_tolerant_forced_sdo_write(
+                "tx_settings",
+                "sampling_rate",
+                self.SET_RATE
+            )
+        elif not sample_rate[1]:
+            self._state = 0xFF
+            logger.error("Sband SDR driver failed during _configure in sample rate")
+
+    def _reset(self):
+        """send the commands to turn off the Transmitter and let the S-Band take more data."""
+        succeeded = True
+        succeeded and self._fault_tolerant_forced_sdo_write("sdr_power", None, 0)
+        # succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 0)
+        self._frames_to_send = 0
+        if not succeeded:
+            self._state = 0xFF
+            logger.error("Sband SDR driver failed during _reset")
+
+    def send_data_now(self):
+        """
+        Send the commands to being downlinking and start the timer for when we should send again"""
+        self._state = 3
+        baud = self.SET_RATE / (self.SET_SAMPLES / 2) # should be 675000 with the flight config
+        duration = self._frames_to_send * 1275 * 8 / baud + 1 # SDR uses fixed 1275B frames.
+        # We add a second to the duration so that there aren't any issues with state switching.
+
+        succeeded = True
+        # succeeded and self._fault_tolerant_forced_sdo_write("sdr_power", None, 1)
+        succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 1)
+        if not succeeded:
+            self._state = 0xFF
+            logger.error("Sband SDR driver failed during send_data_now")
+
+        self._send_timer = monotonic() + duration + self.MARGIN
+
+    # Fault tolerant SDO functions because cantbus and cantopen fucking suck.
+    def _fault_tolerant_lax_sdo_read_log(
+        self,
+        index: int | str,
+        subindex: int | str | None,
+        info: bool = False
+    ) -> None:
+        """
+        Tries to sdo read once and output the read value to the log. Returns nothing. This function
+        is intended to be used for creating debug information in the log. By default, it will output
+        to logger.debug although if info is True then it will output to logger.info instead.
+        """
         try:
-            self._node.sdo_write("sdr", "sdr_power", None, 1)
+            value = self._node.sdo_read("sdr", index, subindex)
         except SdoError as e:
-            logger.error(f"failed to send sdo power on cmd to SDR: {e}")
+            logger.error(f"failed to sdo read for debugging from SDR: {e}")
+            self._sdo_fault += 1
+            time.sleep(0.07)
+        else:
+            self._sdo_fault = 0
+            if info:
+                logger.info(f"SDR sdoread from {index}:{subindex} returned {value}")
+            else:
+                logger.debug(f"SDR sdoread from {index}:{subindex} returned {value}")
+
+    def _fault_tolerant_forced_sdo_read(
+        self,
+        index: int | str,
+        subindex: int | str | None,
+    ) -> [str | float | bytes | bool | int, bool]:
+        """
+        Keeps trying to SDO read until it fails too many times or succeeds. Returns the value and
+        success state, with the value being meaningful only if the sdo succeeded.
+        """
+        while True:
+            try:
+                value = self._node.sdo_read("sdr", index, subindex)
+            except SdoError as e:
+                logger.error(f"failed to sdo read from SDR: {e}")
+                self._sdo_fault += 1
+                if self._sdo_fault >= self.SDO_FAULT_LIMIT:
+                    self._state = 0xFF
+                    return [0, False]
+                time.sleep(0.051)
+            else:
+                logger.debug(f"Read value {value} from {index}:{subindex} on S band SDR")
+                self._sdo_fault = 0
+                return [value, True]
+
+    def _fault_tolerant_lax_sdo_write(
+        self,
+        index: int | str,
+        subindex: int | str | None,
+        value: str | float | bytes | bool
+    ) -> bool:
+        """
+        Keeps trying to read an SDO until it fails too many times or succeeds. Returns the value
+        and success state, with the value being meaningful only if the sdo succeeded.
+        """
+        try:
+            self._node.sdo_write("sdr", index, subindex, value)
+        except SdoError as e:
+            logger.error(f"failed to sdo write SDR: {e}")
             self._sdo_fault += 1
             if self._sdo_fault >= self.SDO_FAULT_LIMIT:
                 self._state = 0xFF
+                return False
+            return False
+        else:
+            logger.debug(f"Wrote value {value} to {index}:{subindex} on S band SDR")
+            self._sdo_fault = 0
+            return True
 
-    def _send_stop_cmd(self) -> None:
-        try:
-            self._node.sdo_write("sdr", "sdr_power", None, 0)
-        except SdoError as e:
-            logger.error(f"failed to send sdo power off cmd to SDR: {e}")
-            self._sdo_fault += 1
-            if self._sdo_fault >= self.SDO_FAULT_LIMIT:
-                self._state = 0xFF
+    def _fault_tolerant_forced_sdo_write(
+        self,
+        index: int | str,
+        subindex: int | str | None,
+        value: str | float | bytes | bool
+    ) -> bool:
+        """
+        Keeps trying to read an SDO until it fails too many times or succeeds. Returns the value
+        and success state, with the value being meaningful only if the sdo succeeded.
+        """
+        while True:
+            try:
+                self._node.sdo_write("sdr", index, subindex, value)
+            except SdoError as e:
+                logger.error(f"failed to sdo write SDR: {e}")
+                self._sdo_fault += 1
+                if self._sdo_fault >= self.SDO_FAULT_LIMIT:
+                    self._state = 0xFF
+                    return False
+                time.sleep(0.051)
+            else:
+                logger.debug(f"Wrote value {value} to {index}:{subindex} on S band SDR")
+                self._sdo_fault = 0
+                return True
 
-    def _get_sdr_status(self) -> int:
-        try:
-            val = self._node.sdo_read("sdr", "sdr_status", None)
-        except SdoError as e:
-            logger.error(f"failed to get sdr status: {e}")
-            self._sdo_fault += 1
-            if self._sdo_fault >= self.SDO_FAULT_LIMIT:
-                self._state = 0xFF
-            val = 0
-        return val
+    def _fault_tolerant_forced_sdo_block_write_frame(
+        self,
+        frame: bytes
+    ) -> bool:
+        """
+        Keeps trying to send a given frame until it either succeeds, or fails too much. Uses the
+        block transfer sdo rather than the normal, slower SDOs. This method is intended to be used
+        only for the transfer of complete frames, and should not be used for anything else.
+        """
+        if len(frame) > 1024:
+            logger.error("Error sending frame to sband, got frame length greater than 1024 bytes.")
+            return False
+        attempts = 0
 
-    def send_queued_messages(self) -> int:
-        """The sband needs us to send a 1 to 0x400B before it begins downlinking data"""
-        try:
-            self._node.sdo_write("sdr", "tx_send_cache", None, 1)
-        except SdoError as e:
-            logger.error(f"failed to get sdr status: {e}")
-            self._sdo_fault += 1
-            if self._sdo_fault >= self.SDO_FAULT_LIMIT:
-                self._state = 0xFF
+        while True:
+            try:
+                with self._sdr_rnode.sdo['tx_speedy_transfer'].open(
+                    'wb', size=len(frame), block_transfer=True
+                ) as outfile:
+                    outfile.write(frame)
+            except SdoError as e:
+                logger.error(f"failed to block transfer sdo write frame to sband: {e}")
+                self._fault_tolerant_lax_sdo_read_log("tx_data_statistics", "rx_bytes")
+                self._sdo_fault += 1
+                if self._sdo_fault >= self.SDO_FAULT_LIMIT:
+                    if attempts < 2:
+                        self._sdo_fault = 0
+                        attempts += 1
+                        logger.error(f"reattempting SDO of frame to Sband. Attempts:{attempts}")
+                        time.sleep(0.31415) # ideally shift us off any PDOs
+                        continue
+                    self._state = 0xFF
+                    return False
+                time.sleep(0.07)
+            else:
+                logger.debug("Sent frame to S band SDR")
+                self._sdo_fault = 0
+                self._frames_to_send += 1
+                self._last_frame = monotonic()
+                return
+
+    # customer facing interaction functions
+    def send_frame(self, payload):
+        """Just calls the private function."""
+        attempts = 0
+        while True:
+            result = self._fault_tolerant_forced_sdo_read("sdr_status", None)
+            if not result[1]:
+                if self.state == 0xFF:
+                    return
+            elif result[0] == 2:
+                break
+            else:
+                if result[0] == 0:
+                    self._fault_tolerant_forced_sdo_write("sdr_power", None, 1)
+                time.sleep(0.5)
+                attempts += 1
+                if attempts > 60:
+                    logger.error("SDR failed to set power to on after 30 second.")
+
+        self._fault_tolerant_forced_sdo_block_write_frame(payload)
+
+    def can_send_now(self):
+        """Used to determine if we should queue or send immediately"""
+        return self._state == 2
 
     def is_rf_ok(self) -> bool:
+        """Used to determine if we should try to use the sband (see can_send_now for how.)"""
         self._od_status.value = self._state
-        return self._state == 3
+        return self._state == 2 or self._state == 3
 
     def rf_reset(self) -> None:
+        """Turns off the sdr, clears the state, and restarts the boot process."""
+        self._node_mgr.disable("sdr")
+        time.sleep(5)
+        self._state = 1
         self._rf_reset_count += 1
 
     @property

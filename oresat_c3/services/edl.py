@@ -1,6 +1,7 @@
 """'EDL Service"""
 
 from queue import Empty, SimpleQueue
+from threading import Event
 from time import time
 from typing import Any, Optional, Union
 
@@ -68,6 +69,12 @@ class EdlService(Service):
         self._file_uplink: SimpleQueue[TransferFrame] = channel_router_service.request_uplink_route(
             EdlVcid.FILE_TRANSFER
         )
+        self._payload_file_downlink: SimpleQueue[bytes] = channel_router_service.request_downlink_route(  # noqa: E501
+            EdlVcid.PAYLOAD_FILE_DOWNLINK
+        )
+        self._payload_file_uplink: SimpleQueue[TransferFrame] = channel_router_service.request_uplink_route(  # noqa: E501
+            EdlVcid.PAYLOAD_FILE_DOWNLINK
+        )
         self._node_flasher_service = node_flasher_service
 
         self.put_req_queue = SimpleQueue()  # send new put requests from here
@@ -79,6 +86,8 @@ class EdlService(Service):
 
         self.GND_ID = ByteFieldU8(0)
         self.SAT_ID = ByteFieldU8(1)
+        self._event = Event()
+        self._event.clear()
         self._init_cfdp(node.fwrite_cache)
 
         # objs
@@ -124,7 +133,7 @@ class EdlService(Service):
                     # FIXME this value should come from EdlPacket but EdlPacket does not define it.
                     # How does the exact value get determined? Currently it's just a mirror of the
                     # value in edl_file_upload.py
-                    max_packet_len=950,
+                    max_packet_len=966,
                     closure_requested=True,
                     crc_on_transmission=False,
                     default_transmission_mode=TransmissionMode.ACKNOWLEDGED,
@@ -187,11 +196,6 @@ class EdlService(Service):
         try:
             packet = EdlPacket.from_frame(frame, self._hmac_key, not self._flight_mode)
         except (EdlPacketError, SdlsInvalidHmacError) as e:
-            self._rejected_count += 1
-            self._rejected_count &= 0xFF_FF_FF_FF
-            logger.error(f"invalid EDL request packet: {e}")
-            return None  # no responses to invalid packets
-        except SdlsInvalidHmacError as e:
             self._rejected_count += 1
             self._rejected_count &= 0xFF_FF_FF_FF
             logger.error(f"invalid EDL request packet: {e}")
