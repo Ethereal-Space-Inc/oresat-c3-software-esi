@@ -24,19 +24,16 @@ def get_rtc_time(rtc: str="rtc0") -> float:
         logger.error("RTC does not exist")
         return -1.0
 
-    with open(rtc_time_path, "r") as f:
-        ts = float(f.read())
+    try:
+        with open(rtc_time_path, "r") as f:
+            ts = float(f.read())
+    except OSError as e:    # the driver returns an error if the RTC time is invalid
+        logger.error(f"RTC {rtc} time is not valid: {e}")
+        return -1.0
 
     return ts
 
-
-<<<<<<< Updated upstream
-def set_rtc_time(ts: float) -> bool:
-||||||| Stash base
-def set_rtc_time(ts: float):
-=======
 def set_rtc_time(ts: float, rtc_path: str="/dev/rtc"):
->>>>>>> Stashed changes
     """
     Set the RTC time.
 
