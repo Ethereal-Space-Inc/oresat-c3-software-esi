@@ -23,7 +23,7 @@ dependencies = [
     "gpiod",
     "fastcrc~=0.3",
     "numpy>=1.19.5",
-    "oresat-configs @ git+https://github.com/Ethereal-Space-Inc/oresat-configs-esi",
+    "oresat-configs @ git+https://github.com/Ethereal-Space-Inc/oresat-configs-esi@timekeeping",
     "oresat-olaf @ git+https://github.com/Ethereal-Space-Inc/oresat-olaf-esi",
     "scipy>=1.6.0",
     "skyfield>=1.54",

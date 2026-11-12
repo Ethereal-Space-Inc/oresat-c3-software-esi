@@ -170,7 +170,7 @@ def main():
     time_sync_service = TimeSyncService(node_mgr_service, mock_hw)
     cop_service = CopManagerService()
     channel_router_service = ChannelRouterService(radios_service, cop_service)
-    edl_service = EdlService(app.node, node_mgr_service, beacon_service, channel_router_service, node_flasher_service)  # noqa: E501
+    #edl_service = EdlService(app.node, node_mgr_service, beacon_service, channel_router_service, node_flasher_service)  # noqa: E501
     adcs_mgr_service = ADCSManager()
     mdb_service = MissionDatabaseService(node_mgr_service)
     payload_service = PayloadService(node_mgr_service, config.mission, mock_hw == "all")
@@ -180,7 +180,7 @@ def main():
     app.add_service(beacon_service)
     app.add_service(cop_service)
     app.add_service(channel_router_service)
-    app.add_service(edl_service)
+    #app.add_service(edl_service)
     app.add_service(node_mgr_service)
     app.add_service(adcs_mgr_service)
     app.add_service(node_flasher_service)
