@@ -24,7 +24,7 @@ dependencies = [
     "fastcrc~=0.3",
     "numpy>=1.19.5",
     "oresat-configs @ git+https://github.com/Ethereal-Space-Inc/oresat-configs-esi@timekeeping",
-    "oresat-olaf @ git+https://github.com/Ethereal-Space-Inc/oresat-olaf-esi",
+    "oresat-olaf @ git+https://github.com/Ethereal-Space-Inc/oresat-olaf-esi@timekeeping",
     "scipy>=1.6.0",
     "skyfield>=1.54",
     "smbus2",
