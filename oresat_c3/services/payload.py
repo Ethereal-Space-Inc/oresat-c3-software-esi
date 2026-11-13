@@ -468,7 +468,7 @@ class OsirisHandler:
             self._state.value = 1
 
     def _activate_pppd(self):
-        self._ppp_proc = subprocess.Popen(
+        self._ppp_proc = subprocess.Popen([
             "/usr/sbin/pppd",
             "nodetach",
             "nocrtscts",
@@ -483,7 +483,7 @@ class OsirisHandler:
             "noproxyarp",
             "/dev/ttyS3",
             "921600",
-        )
+        ])
 
     def _change_bootup(self, new_state: int, timeout: int) -> None:
         self._timeout = 5
