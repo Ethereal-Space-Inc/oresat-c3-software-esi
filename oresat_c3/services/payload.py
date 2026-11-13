@@ -21,7 +21,7 @@ from cfdppy.mib import (
     RemoteEntityConfigTable,
 )
 from cfdppy.request import PutRequest
-from olaf import Service, logger, MasterNode
+from olaf import MasterNode, Service, logger
 from oresat_configs.constants import Mission
 from spacepackets.cfdp import (
     ChecksumType,
@@ -132,6 +132,7 @@ class PayloadService(Service):
 
     def __del__(self) -> None:
         if self._downlink_thread is not None and self._downlink_thread.is_alive():
+            self._downlink_end.set()
             self._downlink_thread.join()
 
     def on_loop(self) -> None:
@@ -171,7 +172,12 @@ class PayloadService(Service):
 
     def downlink_now(self, val: bool):
         if self._radios.sband is not None:
-            self._downlink_thread = Thread(target = self._downlink_handler.handle_downlink)
+            self._downlink_end = Event()
+            self._downlink_end.clear()
+            self._downlink_thread = Thread(
+                target = self._downlink_handler.handle_downlink,
+                kwargs={"kill_downlink": self._downlink_end}
+            )
             self._downlink_thread.start()
 
 class BeeconHandler:
@@ -600,7 +606,7 @@ class OsirisDownlink:
 
         self._payload_put_req_queue.put(put_req)
 
-    def handle_downlink(self):
+    def handle_downlink(self, kill_downlink: Event):
         """Master function that should be called when trying to downlink."""
 
         # turn on the sband
@@ -613,8 +619,10 @@ class OsirisDownlink:
         archive = self._create_file_archive()
 
         # await the S band being on.
-        while not self._radios.sdr_ready():
-            time.sleep(1)
+        # while not self._radios.sdr_ready():
+        #     time.sleep(1)
+            # if kill_downlink.is_set():
+            #     return
 
         # Turn on the source handler and create the PDU.
         self._cfdp_source_handler.start()
@@ -624,13 +632,17 @@ class OsirisDownlink:
         # await the src_handler entering idle mode then stop it
         while not self._cfdp_source_handler.source_handler.state == CfdpState.IDLE:
             time.sleep(1)
+            if kill_downlink.is_set():
+                return
         self._event.set()
         time.sleep(2)
         self._event.clear()
 
         # await the sband having no more frames to send and having returned to the ready state.
-        while (not self._radios.sband_queue.empty()) or (not self._radios.sband.can_send_now()):
-            time.sleep(1)
+        # while (not self._radios.sband_queue.empty()) or (not self._radios.sband.can_send_now()):
+        #     time.sleep(1)
+            # if kill_downlink.is_set():
+            #     return
 
         # turn off the sband
         self._od_sdr_enable.value = False
