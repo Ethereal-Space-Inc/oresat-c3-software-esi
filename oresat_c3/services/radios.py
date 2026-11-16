@@ -46,11 +46,11 @@ class RadiosService(Service):
         self.enable_uhf = False
         if mock_hw:
             self.uhf = Radio()
-            self.lband = Radio()
+            # self.lband = Radio()
         else:
             self._radio_enable_gpio = request_gpio_output("/dev/gpiochip1", 22, "RADIO_ENABLE")
             self.uhf = UHFRadio()
-            self.lband = Radio()
+            # self.lband = Radio()
 
         self.recv_queue: SimpleQueue[bytes] = SimpleQueue()
         self._node_mgr = node_mgr
@@ -64,15 +64,15 @@ class RadiosService(Service):
         if not self._mock_hw:
             self._radio_enable_gpio.set_value(self._radio_enable_gpio.offsets[0], Value.ACTIVE)
             time.sleep(0.1)
-        self.node.add_daemon("lband")
+        # self.node.add_daemon("lband")
         self.node.add_daemon("uhf")
 
         logger.info("enabling uhf radio")
         self.uhf.enable()
-        logger.info("enabling lband radio")
-        self.lband.enable()
+        # logger.info("enabling lband radio")
+        # self.lband.enable()
 
-        self.node.od["lband"]["synth_relock_count"].value = self.lband.rf_reset_count
+        self.node.od["lband"]["synth_relock_count"].value = 0
 
         # FIXME: add an OD for UHF TOT clear count
 
@@ -99,7 +99,7 @@ class RadiosService(Service):
 
         if not self._mock_hw:
             self.node.daemons["uhf"].start()
-            self.node.daemons["lband"].start()
+            # self.node.daemons["lband"].start()
 
         self._sband_downlink = self.node.od["sdr_ctrl"]["sband_downlink"]
         self._sband_enable = self.node.od["sdr_ctrl"]["should_enable"]
@@ -130,13 +130,13 @@ class RadiosService(Service):
             self.uhf.rf_reset()
             # FIXME: Add OD TOT counter
 
-        lBandOk = self.lband.is_rf_ok()
-        self.node.od["lband"]["synth_lock"].value = lBandOk
+        # lBandOk = self.lband.is_rf_ok()
+        # self.node.od["lband"]["synth_lock"].value = lBandOk
 
-        if not lBandOk:
-            logger.error("si41xx unlocked, resetting lband synth")
-            self.lband.rf_reset()
-            self.node.od["lband"]["synth_relock_count"].value = self.lband.rf_reset_count
+        # if not lBandOk:
+        #     logger.error("si41xx unlocked, resetting lband synth")
+        #     self.lband.rf_reset()
+        #     self.node.od["lband"]["synth_relock_count"].value = self.lband.rf_reset_count
 
         self._handle_sband()
 
@@ -157,7 +157,7 @@ class RadiosService(Service):
         """Power down radios and stop daemons."""
         logger.info("disabling radios")
         if not self._mock_hw:
-            self.node.daemons["lband"].stop()
+            # self.node.daemons["lband"].stop()
             self.node.daemons["uhf"].stop()
 
         self._beacon_downlink_socket.close()
@@ -169,8 +169,8 @@ class RadiosService(Service):
         logger.info("disabling uhf radio")
         self.uhf.disable()
 
-        logger.info("disabling lband radio")
-        self.lband.disable()
+        # logger.info("disabling lband radio")
+        # self.lband.disable()
 
         logger.info("disabling radio power domain")
         if not self._mock_hw:
