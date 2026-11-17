@@ -49,14 +49,16 @@ class StateService(Service):
         self._last_tx_enable_obj: canopen.objectdictionary.Variable = None
         self._last_edl_obj: canopen.objectdictionary.Variable = None
         self._edl_timeout_obj: canopen.objectdictionary.Variable = None
-        self._vbatt_bp1_obj: canopen.objectdictionary.Variable = None
-        self._vbatt_bp2_obj: canopen.objectdictionary.Variable = None
+
+        self._b1_p1_voltage: list[canopen.objectdictionary.Variable] = None
+        self._b1_p2_voltage: list[canopen.objectdictionary.Variable] = None
+        self._b2_p1_voltage: list[canopen.objectdictionary.Variable] = None
+        self._b2_p2_voltage: list[canopen.objectdictionary.Variable] = None
 
     def on_start(self):
         edl_rec = self.node.od["edl"]
         antennas_rec = self.node.od["antennas"]
         tx_control_rec = self.node.od["tx_control"]
-        bat_1_rec = self.node.od["battery_1"]
 
         self._c3_state_obj = self.node.od["status"]
         self._reset_timeout_obj = self.node.od["reset_timeout"]
@@ -71,8 +73,15 @@ class StateService(Service):
         self._last_tx_enable_obj = tx_control_rec["last_enable_timestamp"]
         self._last_edl_obj = edl_rec["last_timestamp"]
         self._edl_timeout_obj = edl_rec["timeout"]
-        self._vbatt_bp1_obj = bat_1_rec["pack_1_vbatt"]
-        self._vbatt_bp2_obj = bat_1_rec["pack_2_vbatt"]
+
+        if "battery_1" in self._od_db.keys():
+            bat_1_rec = self.node.od["battery_1"]
+            self._b1_p1_voltage = bat_1_rec["pack_1_vbatt"]
+            self._b1_p2_voltage = bat_1_rec["pack_2_vbatt"]
+        if "battery_2" in self._od_db.keys():
+            bat_2_rec = self.node.od["battery_2"]
+            self._b2_p1_voltage = bat_2_rec["pack_1_vbatt"]
+            self._b2_p2_voltage = bat_2_rec["pack_2_vbatt"]
 
         if self.node.od["versions"]["hw_version"].value.startswith("6"):
             self._antennas = AntennasC3v6(self._mock_hw)
@@ -247,16 +256,6 @@ class StateService(Service):
         return (time() - self._last_edl_obj.value) < self._edl_timeout_obj.value
 
     @property
-    def is_bat_lvl_good(self) -> bool:
-        """bool: Helper property to check if the battery levels are good."""
-
-        # return (
-        #     self._vbatt_bp1_obj.value > self.BAT_LEVEL_LOW
-        #     and self._vbatt_bp2_obj.value > self.BAT_LEVEL_LOW
-        # )
-        return True
-
-    @property
     def has_reset_timed_out(self) -> bool:
         """bool: Helper property to check if the reset timeout has been reached."""
 
@@ -264,6 +263,32 @@ class StateService(Service):
             return False
 
         return (monotonic() - self._start_time) > self._reset_timeout_obj.value
+
+    @property
+    def is_bat_lvl_good(self) -> bool:
+        """bool: Helper property to check if the battery levels are above low."""
+        good = True
+
+        if "battery_1" in self._od_db.keys():
+            good = good and (
+                self._b1_p1_voltage.value > self.BAT_LEVEL_LOW
+                or self._b1_p1_voltage.value < self.BAT_LEVEL_INCOHERENT
+            )
+            good = good and (
+                self._b1_p2_voltage.value > self.BAT_LEVEL_LOW
+                or self._b1_p2_voltage.value < self.BAT_LEVEL_INCOHERENT
+            )
+        if "battery_2" in self._od_db.keys():
+            good = good and (
+                self._b2_p1_voltage.value > self.BAT_LEVEL_LOW
+                or self._b2_p1_voltage.value < self.BAT_LEVEL_INCOHERENT
+            )
+            good = good and (
+                self._b2_p2_voltage.value > self.BAT_LEVEL_LOW
+                or self._b2_p2_voltage.value < self.BAT_LEVEL_INCOHERENT
+            )
+
+        return good
 
     def store_state(self):
         """Store the state in F-RAM."""
