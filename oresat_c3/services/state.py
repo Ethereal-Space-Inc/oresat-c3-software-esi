@@ -21,6 +21,7 @@ class StateService(Service):
     """C3 State Service."""
 
     BAT_LEVEL_LOW = 6500  # in mV
+    BAT_LEVEL_INCOHERENT = 250
     I2C_BUS_NUM = 2
     FRAM_I2C_ADDR = 0x50
 
