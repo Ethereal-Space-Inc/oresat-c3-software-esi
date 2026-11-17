@@ -1,12 +1,13 @@
 """
 This class should eventually be used to define a mission database. For now, it will be used to
-define GPS information.
+store gps and solar information.
 """
 
 from os.path import abspath
 from time import monotonic
 
-from olaf import Service, logger, new_oresat_file
+import canopen
+from olaf import Service, logger, new_oresat_file, scet_int_to_time
 
 from .node_manager import NodeManagerService
 
@@ -14,6 +15,7 @@ from .node_manager import NodeManagerService
 class MissionDatabaseService(Service):
     """Mission Database Service"""
 
+    BAT_LEVEL_HIGH = 7500
     BAT_LEVEL_LOW = 6500  # mV
 
     def __init__(self, node_mgr_service: NodeManagerService) -> None:
@@ -21,110 +23,152 @@ class MissionDatabaseService(Service):
         self._node_mgr_service = node_mgr_service
 
         self.next_gps_index = 1
-        self.data = ""
+        self._gps_data = ""
         self.current_datapoints = 0
 
+        self._b1_p1_voltage: list[canopen.objectdictionary.Variable] = None
+        self._b1_p2_voltage: list[canopen.objectdictionary.Variable] = None
+        self._b2_p1_voltage: list[canopen.objectdictionary.Variable] = None
+        self._b2_p2_voltage: list[canopen.objectdictionary.Variable] = None
+
     def on_start(self) -> None:
+        self._od_active = self.node.od["mdb"]["active"]
+        self._od_refresh_delay = self.node.od["mdb"]["refresh_delay"]
+        self._od_max_num_files = self.node.od["mdb"]["max_num_files"]
+        self._od_data_per_file = self.node.od["mdb"]["data_per_file"]
+        self._od_active_timeout = self.node.od["mdb"]["active_timeout"]
+        self._od_idle_timeout = self.node.od["mdb"]["idle_timeout"]
+        self._last_gps_timeout = monotonic()
+
+        self.init_battery_od()
+        self.init_gps_od()
+
+
+
+    def on_loop(self) -> None:
+        """"""
+        if not self._od_active.value:
+            self.sleep(1)
+            return
+
+        try:
+            self._handle_gps()
+        except Exception as e:
+            logger.error(f"MDB service experienced following issue!: {e}")
+            self._od_active.value = False
+
+        self.sleep(1)
+
+    ### Battery Helper
+    def init_battery_od(self) -> None:
+        if "battery_1" in self._od_db.keys():
+            bat_1_rec = self.node.od["battery_1"]
+            self._b1_p1_voltage = bat_1_rec["pack_1_vbatt"]
+            self._b1_p2_voltage = bat_1_rec["pack_2_vbatt"]
+        if "battery_2" in self._od_db.keys():
+            bat_2_rec = self.node.od["battery_2"]
+            self._b2_p1_voltage = bat_2_rec["pack_1_vbatt"]
+            self._b2_p2_voltage = bat_2_rec["pack_2_vbatt"]
+
+    @property
+    def is_bat_lvl_good(self) -> bool:
+        """bool: Helper property to check if the battery levels are above low."""
+        good = True
+        if "battery_1" in self._od_db.keys():
+            good = good and self._node_mgr_service.node_status("battery_1") != 0xFF
+            good = good and self._b1_p1_voltage.value > self.BAT_LEVEL_LOW
+            good = good and self._b1_p2_voltage.value > self.BAT_LEVEL_LOW
+        if "battery_2" in self._od_db.keys():
+            good = good and self._node_mgr_service.node_status("battery_2") != 0xFF
+            good = good and self._b2_p1_voltage.value > self.BAT_LEVEL_LOW
+            good = good and self._b2_p2_voltage.value > self.BAT_LEVEL_LOW
+        return good
+
+
+
+
+    def _init_gps_od(self) -> None:
+        """Create the objects to easily reference gps information"""
         self._ecef_x = self.node.od["gps"]["skytraq_ecef_x"]
         self._ecef_y = self.node.od["gps"]["skytraq_ecef_y"]
         self._ecef_z = self.node.od["gps"]["skytraq_ecef_z"]
         self._ecef_vx = self.node.od["gps"]["skytraq_ecef_vx"]
         self._ecef_vy = self.node.od["gps"]["skytraq_ecef_vy"]
         self._ecef_vz = self.node.od["gps"]["skytraq_ecef_vz"]
-        self._scet = self.node.od["scet"]
+        self._scet = self.node.od["gps"]["scet"]
 
-        self.active = self.node.od["mdb"]["active"]
-        self._refresh_delay = self.node.od["mdb"]["refresh_delay"]
-        self._max_num_files = self.node.od["mdb"]["max_num_files"]
-        self._data_per_file = self.node.od["mdb"]["data_per_file"]
-        self._active_timeout = self.node.od["mdb"]["active_timeout"]
-        self._idle_timeout = self.node.od["mdb"]["idle_timeout"]
-
-        bat_1_rec = self.node.od["battery_1"]
-        self._vbatt_bp1_obj = bat_1_rec["pack_1_vbatt"]
-        self._vbatt_bp2_obj = bat_1_rec["pack_2_vbatt"]
-
-    def on_loop(self) -> None:
-        """"""
-        self.sleep(0.5)
-        if self.active.value is False:
-            self.sleep(self._refresh_delay.value)
-            return
-
+    def _handle_gps(self) -> None:
         if (
             self._node_mgr_service.node_status("gps") == 0xFF
             or self._node_mgr_service.node_status("gps") == 4
         ):  # Dead or missing
-            self.active.value = False
-
-        if (
-            self._node_mgr_service.node_status("gps") != 1  # On.
-            and self._node_mgr_service.node_status("gps") != 2  # Boot
-            and self.is_bat_lvl_good
-        ):
-            self._node_mgr_service.enable("gps")
-            self.sleep(self._refresh_delay.value)
-            self._enabled_time = monotonic()
-            return
-        elif self.is_bat_lvl_good is False:
-            self.sleep(self._refresh_delay.value)
-            if (
-                self._node_mgr_service.node_status("gps") != 1  # On.
-                and self._node_mgr_service.node_status("gps") != 2  # Boot
-            ):
-                self._node_mgr_service.disable("gps")
             return
 
+        if self._last_gps_timeout < monotonic():
+            return
         self._set_csv_gps()
         self._set_od_gps()
-        if self.current_datapoints > self._data_per_file.value:
-            self.update_files()
+        self._update_gps_file()
 
-        if (
-            self.is_bat_lvl_good is False
-            or monotonic() - self._enabled_time > self._active_timeout.value
+        if ( # shut off if low on power or we are out of the capture window.
+            not self.is_bat_lvl_good
+            or monotonic() + self._gps_enabled_time > self._od_active_timeout.value
         ):
-            self._idle()
-        self.sleep(self._refresh_delay.value)
+            self._gps_should_on = False
+        elif self.is_bat_lvl_good and self._gps_idle_time > self._od_idle_timeout.value:
+            self._gps_should_on = True
 
-    def _idle(self) -> None:
-        # Turn off the gps if it is on and we are not in state EDL or self._was_enabled
-        # If the gps is on enter a loop where we check to make sure that the battery is good.
-        # if not, shut it down.
-        self._node_mgr_service.disable("gps")
-        self.sleep(self._idle_timeout.value)
-        self._enabled_time = monotonic()
+    def _manage_gps(self) -> None:
+        if (
+            self._gps_should_on
+            and self._node_mgr_service.node_status("gps") != 1  # On.
+            and self._node_mgr_service.node_status("gps") != 2  # Boot
+        ):
+            self._node_mgr_service.enable("gps")
+            self._enabled_time = monotonic()
+        elif (
+            not self._gps_should_on
+            and self._node_mgr_service.node_status("gps") != 1  # On.
+            and self._node_mgr_service.node_status("gps") != 2  # Boot
+        ):
+            self._node_mgr_service.disable("gps")
+            self._gps_idle_time = monotonic()
 
-    def update_files(self) -> None:
+    def _update_gps_file(self) -> None:
+        if self.current_datapoints < self._od_data_per_file.value:
+            return
+
         new_file_name = new_oresat_file("gps-data", "c3", -1, ".csv")
         new_file_path = abspath(self.node.cache_base_dir + new_file_name)
         logger.error(f"Making file {new_file_name}")
         with open(new_file_path, "w") as f:
-            f.write(self.data)
+            f.write(self._gps_data)
 
         self.node.fwrite_cache.add(new_file_path, True)
-        self.data = ""
+        self._gps_data = ""
 
         files = self.node.fwrite_cache.files("gps-data")
-        if len(files) > self._max_num_files.value:
+        while len(files) > self._od_max_num_files.value:
             files = sorted(files)
             logger.error(f"Deleting file {files[0].name}")
             self.node.fwrite_cache.remove(files[0])
+            files = self.node.fwrite_cache.files("gps-data")
 
         self.current_datapoints = 0
 
     def _set_csv_gps(self) -> None:
-        self.current_datapoints += 1
-        self.data += str(self._ecef_x.value) + ","
-        self.data += str(self._ecef_y.value) + ","
-        self.data += str(self._ecef_z.value) + ","
-        self.data += str(self._ecef_vx.value) + ","
-        self.data += str(self._ecef_vy.value) + ","
-        self.data += str(self._ecef_vz.value) + ","
+        self._last_gps_timeout = monotonic + self._od_refresh_delay.value
 
-        fulltime = self._scet.value.to_bytes(8, "little")
-        secondstime = int.from_bytes(fulltime[:4], "little")
-        self.data += str(secondstime) + "\n"
+        self.current_datapoints += 1
+        self._gps_data += str(self._ecef_x.value) + ","
+        self._gps_data += str(self._ecef_y.value) + ","
+        self._gps_data += str(self._ecef_z.value) + ","
+        self._gps_data += str(self._ecef_vx.value) + ","
+        self._gps_data += str(self._ecef_vy.value) + ","
+        self._gps_data += str(self._ecef_vz.value) + ","
+
+        time = scet_int_to_time(self._scet.value)
+        self._gps_data += str(int(time)) + "\n"
 
     def _set_od_gps(self) -> None:
         append = f"_{self.next_gps_index}"
@@ -136,19 +180,8 @@ class MissionDatabaseService(Service):
         self.node.od["hist_ecef_vy"]["ecef_vy" + append].value = self._ecef_vy.value
         self.node.od["hist_ecef_vz"]["ecef_vz" + append].value = self._ecef_vz.value
 
-        fulltime = self._scet.value.to_bytes(8, "little")
-        secondstime = int.from_bytes(fulltime[:4], "little")
-        self.node.od["hist_unix_time"]["time" + append].value = secondstime
+        time = scet_int_to_time(self._scet.value)
+        self.node.od["hist_unix_time"]["time" + append].value = int(time)
         self.next_gps_index += 1
         if self.next_gps_index > 32:
             self.next_gps_index = 1
-
-    # stolen from state service. probably should use that one instead of redefining it.
-    @property
-    def is_bat_lvl_good(self) -> bool:
-        """bool: Helper property to check if the battery levels are good."""
-
-        return (
-            self._vbatt_bp1_obj.value > self.BAT_LEVEL_LOW
-            and self._vbatt_bp2_obj.value > self.BAT_LEVEL_LOW
-        )
