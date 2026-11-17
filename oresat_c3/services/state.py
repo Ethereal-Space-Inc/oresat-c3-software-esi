@@ -75,11 +75,11 @@ class StateService(Service):
         self._last_edl_obj = edl_rec["last_timestamp"]
         self._edl_timeout_obj = edl_rec["timeout"]
 
-        if "battery_1" in self._od_db.keys():
+        if "battery_1" in self.node._od_db.keys():
             bat_1_rec = self.node.od["battery_1"]
             self._b1_p1_voltage = bat_1_rec["pack_1_vbatt"]
             self._b1_p2_voltage = bat_1_rec["pack_2_vbatt"]
-        if "battery_2" in self._od_db.keys():
+        if "battery_2" in self.node._od_db.keys():
             bat_2_rec = self.node.od["battery_2"]
             self._b2_p1_voltage = bat_2_rec["pack_1_vbatt"]
             self._b2_p2_voltage = bat_2_rec["pack_2_vbatt"]
@@ -270,7 +270,7 @@ class StateService(Service):
         """bool: Helper property to check if the battery levels are above low."""
         good = True
 
-        if "battery_1" in self._od_db.keys():
+        if "battery_1" in self.node._od_db.keys():
             good = good and (
                 self._b1_p1_voltage.value > self.BAT_LEVEL_LOW
                 or self._b1_p1_voltage.value < self.BAT_LEVEL_INCOHERENT
@@ -279,7 +279,7 @@ class StateService(Service):
                 self._b1_p2_voltage.value > self.BAT_LEVEL_LOW
                 or self._b1_p2_voltage.value < self.BAT_LEVEL_INCOHERENT
             )
-        if "battery_2" in self._od_db.keys():
+        if "battery_2" in self.node._od_db.keys():
             good = good and (
                 self._b2_p1_voltage.value > self.BAT_LEVEL_LOW
                 or self._b2_p1_voltage.value < self.BAT_LEVEL_INCOHERENT

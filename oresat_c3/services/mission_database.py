@@ -4,7 +4,7 @@ store gps and solar information.
 """
 
 from os.path import abspath
-from time import monotonic
+from time import monotonic, time
 
 import canopen
 from olaf import Service, logger, new_oresat_file, scet_int_to_time
@@ -40,10 +40,9 @@ class MissionDatabaseService(Service):
         self._od_idle_timeout = self.node.od["mdb"]["idle_timeout"]
         self._last_gps_timeout = monotonic()
 
-        self.init_battery_od()
-        self.init_gps_od()
-
-
+        self._init_battery_od()
+        self._init_power_od()
+        self._init_gps_od()
 
     def on_loop(self) -> None:
         """"""
@@ -53,19 +52,19 @@ class MissionDatabaseService(Service):
 
         try:
             self._handle_gps()
+            self._record_power()
         except Exception as e:
             logger.error(f"MDB service experienced following issue!: {e}")
             self._od_active.value = False
-
         self.sleep(1)
 
-    ### Battery Helper
-    def init_battery_od(self) -> None:
-        if "battery_1" in self._od_db.keys():
+    ### Battery Helpers
+    def _init_battery_od(self) -> None:
+        if "battery_1" in self.node._od_db.keys():
             bat_1_rec = self.node.od["battery_1"]
             self._b1_p1_voltage = bat_1_rec["pack_1_vbatt"]
             self._b1_p2_voltage = bat_1_rec["pack_2_vbatt"]
-        if "battery_2" in self._od_db.keys():
+        if "battery_2" in self.node._od_db.keys():
             bat_2_rec = self.node.od["battery_2"]
             self._b2_p1_voltage = bat_2_rec["pack_1_vbatt"]
             self._b2_p2_voltage = bat_2_rec["pack_2_vbatt"]
@@ -74,19 +73,75 @@ class MissionDatabaseService(Service):
     def is_bat_lvl_good(self) -> bool:
         """bool: Helper property to check if the battery levels are above low."""
         good = True
-        if "battery_1" in self._od_db.keys():
+        if "battery_1" in self.node._od_db.keys():
             good = good and self._node_mgr_service.node_status("battery_1") != 0xFF
             good = good and self._b1_p1_voltage.value > self.BAT_LEVEL_LOW
             good = good and self._b1_p2_voltage.value > self.BAT_LEVEL_LOW
-        if "battery_2" in self._od_db.keys():
+        if "battery_2" in self.node._od_db.keys():
             good = good and self._node_mgr_service.node_status("battery_2") != 0xFF
             good = good and self._b2_p1_voltage.value > self.BAT_LEVEL_LOW
             good = good and self._b2_p2_voltage.value > self.BAT_LEVEL_LOW
         return good
 
+    ### Power Functions
+    def _init_power_od(self) -> None:
+        """
+        Creates the list of power ODvars to be used. Values should be preceeded by the python
+        time.time()
+        """
+        self._power_header = "time,"
+        self._ods_power_system = []
 
+        # k gives the name of the card, which is also used for generating the rpdo receiving point
+        for k in self.node.od_db.keys():
+            if "solar" in k:
+                item = self.node.od[k]["output_current"]
+                self._ods_power_system.append(item)
+                self._power_header += k
+            elif "battery" in k:
+                item = self.node.od[k]["pack_1_current"]
+                self._ods_power_system.append(item)
+                item = self.node.od[k]["pack_2_current"]
+                self._ods_power_system.append(item)
+                self._power_header += k
 
+        self._power_file_data = ""
+        self._power_file_data += self._power_header + "\n"
+        self._power_data_start = monotonic()
 
+    def _record_power(self) -> None:
+        line = f"{int(time())},"
+        for var in self._ods_power_system:
+            line += f"{var.value},"
+        self._power_file_data += line + "\n"
+        self._handle_power_file()
+
+    def _handle_power_file(self) -> None:
+        """Hardcode the power file to take 90 min of data."""
+        if self.power_data_start + 5400 > monotonic():
+            return
+
+        new_file_name = new_oresat_file("powercsv", "c3", -1, ".csv")
+        new_file_path = abspath(self.node.cache_base_dir + new_file_name)
+        logger.info(f"Making file {new_file_name}")
+        with open(new_file_path, "w") as f:
+            f.write(self._power_file_data)
+
+        self.node.fwrite_cache.add(new_file_path, True)
+        self._power_file_data = ""
+        self._power_file_data += self._power_header + "\n"
+        self._power_data_start = monotonic()
+
+        files = self.node.fwrite_cache.files("powercsv")
+        while len(files) > self._od_max_num_files.value:
+            files = sorted(files)
+            logger.warning(f"Deleting file {files[0].name}")
+            self.node.fwrite_cache.remove(files[0])
+            files = self.node.fwrite_cache.files("powercsv")
+
+        self.current_datapoints = 0
+
+    ### GPS Functions
     def _init_gps_od(self) -> None:
         """Create the objects to easily reference gps information"""
         self._ecef_x = self.node.od["gps"]["skytraq_ecef_x"]
@@ -140,7 +195,7 @@ class MissionDatabaseService(Service):
 
         new_file_name = new_oresat_file("gps-data", "c3", -1, ".csv")
         new_file_path = abspath(self.node.cache_base_dir + new_file_name)
-        logger.error(f"Making file {new_file_name}")
+        logger.info(f"Making file {new_file_name}")
         with open(new_file_path, "w") as f:
             f.write(self._gps_data)
 
@@ -150,7 +205,7 @@ class MissionDatabaseService(Service):
         files = self.node.fwrite_cache.files("gps-data")
         while len(files) > self._od_max_num_files.value:
             files = sorted(files)
-            logger.error(f"Deleting file {files[0].name}")
+            logger.warning(f"Deleting file {files[0].name}")
             self.node.fwrite_cache.remove(files[0])
             files = self.node.fwrite_cache.files("gps-data")
 
