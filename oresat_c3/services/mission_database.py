@@ -101,9 +101,16 @@ class MissionDatabaseService(Service):
             elif "battery" in k:
                 item = self.node.od[k]["pack_1_current"]
                 self._ods_power_system.append(item)
+                self._power_header += f"{k} p1Current"
                 item = self.node.od[k]["pack_2_current"]
                 self._ods_power_system.append(item)
-                self._power_header += k
+                self._power_header += f"{k} p2Current"
+                item = self.node.od[k]["pack_1_voltage"]
+                self._ods_power_system.append(item)
+                self._power_header += f"{k} p1Voltage"
+                item = self.node.od[k]["pack_2_voltage"]
+                self._ods_power_system.append(item)
+                self._power_header += f"{k} p2Voltage"
 
         self._power_file_data = ""
         self._power_file_data += self._power_header + "\n"
