@@ -3,7 +3,9 @@ This class should eventually be used to define a mission database. For now, it w
 store gps and solar information.
 """
 
+import subprocess
 from os.path import abspath
+from pathlib import Path
 from time import monotonic, time
 
 import canopen
@@ -129,12 +131,19 @@ class MissionDatabaseService(Service):
             return
 
         new_file_name = new_oresat_file("powercsv", "c3", -1, ".csv")
-        new_file_path = abspath(self.node.cache_base_dir + new_file_name)
+        new_file_path = abspath(self.node.fwrite_cache.dir + new_file_name)
         logger.info(f"Making file {new_file_name}")
         with open(new_file_path, "w") as f:
             f.write(self._power_file_data)
 
+        #ugly. TODO: Improve?
+        new_archive = f"{new_file_path[:-4]}.tar"
+        cmd = f"tar -czf {new_archive} {new_file_path}"
+        subprocess.run(cmd, shell=True, cwd=self.node.fwrite_cache.dir)
         self.node.fwrite_cache.add(new_file_path, True)
+        self.node.fwrite_cache.add(new_archive, True)
+        self.node.fwrite_cache.delete_file(Path(new_file_path))
+
         self._power_file_data = ""
         self._power_file_data += self._power_header + "\n"
         self._power_data_start = monotonic()
