@@ -97,20 +97,20 @@ class MissionDatabaseService(Service):
             if "solar" in k:
                 item = self.node.od[k]["output_current"]
                 self._ods_power_system.append(item)
-                self._power_header += k
+                self._power_header += f"{k} current,"
             elif "battery" in k:
                 item = self.node.od[k]["pack_1_current"]
                 self._ods_power_system.append(item)
-                self._power_header += f"{k} p1Current"
+                self._power_header += f"{k} p1Current,"
                 item = self.node.od[k]["pack_2_current"]
                 self._ods_power_system.append(item)
-                self._power_header += f"{k} p2Current"
-                item = self.node.od[k]["pack_1_voltage"]
+                self._power_header += f"{k} p2Current,"
+                item = self.node.od[k]["pack_1_vbatt"]
                 self._ods_power_system.append(item)
-                self._power_header += f"{k} p1Voltage"
-                item = self.node.od[k]["pack_2_voltage"]
+                self._power_header += f"{k} p1Voltage,"
+                item = self.node.od[k]["pack_2_vbatt"]
                 self._ods_power_system.append(item)
-                self._power_header += f"{k} p2Voltage"
+                self._power_header += f"{k} p2Voltage,"
 
         self._power_file_data = ""
         self._power_file_data += self._power_header + "\n"
@@ -125,7 +125,7 @@ class MissionDatabaseService(Service):
 
     def _handle_power_file(self) -> None:
         """Hardcode the power file to take 90 min of data."""
-        if self.power_data_start + 5400 > monotonic():
+        if self._power_data_start + 5400 > monotonic():
             return
 
         new_file_name = new_oresat_file("powercsv", "c3", -1, ".csv")
