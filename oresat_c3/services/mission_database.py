@@ -125,7 +125,7 @@ class MissionDatabaseService(Service):
 
     def _handle_power_file(self) -> None:
         """Hardcode the power file to take 90 min of data."""
-        if self._power_data_start + 5400 > monotonic():
+        if self._power_data_start + 54 > monotonic():
             return
 
         new_file_name = new_oresat_file("powercsv", "c3", -1, ".csv")
@@ -143,7 +143,7 @@ class MissionDatabaseService(Service):
         while len(files) > self._od_max_num_files.value:
             files = sorted(files)
             logger.warning(f"Deleting file {files[0].name}")
-            self.node.fwrite_cache.remove(files[0])
+            self.node.fwrite_cache.delete_file(files[0])
             files = self.node.fwrite_cache.files("powercsv")
 
         self.current_datapoints = 0
@@ -213,7 +213,7 @@ class MissionDatabaseService(Service):
         while len(files) > self._od_max_num_files.value:
             files = sorted(files)
             logger.warning(f"Deleting file {files[0].name}")
-            self.node.fwrite_cache.remove(files[0])
+            self.node.fwrite_cache.delete_file(files[0])
             files = self.node.fwrite_cache.files("gps-data")
 
         self.current_datapoints = 0
