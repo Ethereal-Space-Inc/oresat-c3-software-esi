@@ -6,8 +6,10 @@ Handles interfacing with the radio driver daemon.
 
 import socket
 import struct
+import subprocess
 import time
 from queue import SimpleQueue
+from threading import Event, Thread
 from time import monotonic
 
 from canopen.objectdictionary import ObjectDictionary, ODVariable
@@ -16,6 +18,7 @@ from gpiod.line import Value
 from olaf import MasterNode, Service, logger
 
 from ..drivers.si41xx import Si41xx, Si41xxIfdiv
+from ..protocols.ppp_datagram import ppp_opcode, pppDatagram, pppDatagramError
 from ..subsystems._gpio import request_gpio_input, request_gpio_output
 from .node_manager import NodeManagerService
 
@@ -481,6 +484,7 @@ class SbandRadio(Radio):
     MARGIN = 2
 
     SDO_FAULT_LIMIT = 5  # number of failed sdos before going to 0xFF state.
+    PPP_TIMEOUT = 1
 
     def __init__(
         self,
@@ -507,6 +511,13 @@ class SbandRadio(Radio):
         self._send_timer = monotonic()
         self._frames_to_send = 0
         self._last_frame = 0
+
+        self._ppp_proc = None
+        self._ppp_seqnum = 0
+
+    def __del__(self):
+        if self._ppp_proc is not None:
+            self._ppp_proc.kill()
 
     def state_machine(self):
         """State machine for the Sband. States are defined above."""
@@ -853,3 +864,201 @@ class SbandRadio(Radio):
     @property
     def state(self):
         return self._state
+
+    def _activate_pppd(self):
+        self._ppp_proc = subprocess.Popen([
+            "/usr/sbin/pppd",
+            "nodetach",
+            "nocrtscts",
+            "lock",
+            "noauth",
+            "maxfail",
+            "0",
+            "persist",
+            "10.0.42.1:10.0.42.2",
+            "passive",
+            "local",
+            "noproxyarp",
+            "/dev/ttyS5",
+            "921600",
+        ])
+
+    def write_sdo_ppp(
+        self,
+        index: int | str,
+        subindex: int | str | None,
+        value: str | float | bytes | bool,
+        windowed: bool = False
+    ) -> None:
+        # max frames is 10000
+        # send 500, then stop, then 500, then stop, then etc.
+        """Converts a write request into a pppdatagram"""
+        datagram = self.PPP_HEADER + self.PPP_WRITE_OPCODE
+        datagram += b"\x01" if windowed else b"\x00"
+        datagram += self._ppp_seqnum.to_bytes(2, "little")
+        datagram += len(value).to_bytes(2, "little")
+        datagram += value.to_bytes()
+
+        self._out_socket.send(datagram)
+
+        if not windowed:
+            #listen for the response:
+            timeout = monotonic() + self.PPP_TIMEOUT
+            while timeout > monotonic():
+                self._in_socket.recv()
+
+    def read_sdo_ppp(
+        self,
+        index: int | str,
+        subindex: int | str | None,
+    ) -> [str | float | bytes | bool | int, bool]:
+        """Read an index from using the ppp link"""
+
+
+class SdrThread(Thread):
+    """
+    Thread for managing the communication with the sdr.
+
+    Interaction should be handled by calling one of the "send" functions. PDOs will be handled
+    automatically.
+    """
+    BUFFER_LEN = 4096
+    RECEIVING_ADDR = ("", 5601)
+    OUTGOING_ADDR = ("10.0.42.2", 5600)
+
+    def __init__(self, node: MasterNode, stop_event: Event):
+        super().__init__()
+        self.lock = False  # prevents the main loop from catching the acks.
+        self.node = node
+        self.stop_event = stop_event
+        self._sdr_receive_socket = None
+        self._sdr_send_socket = None
+        self._sdr_sessionid = None
+        self._seq_num = 0 # resets every time we start the sdr.
+
+    def __del__(self):
+        if self._sdr_receive_socket is not None:
+            self._sdr_receive_socket.close()
+        if self._sdr_send_socket is not None:
+            self._sdr_send_socket.close()
+
+    def run(self):
+        """Check the sockets and handle things."""
+        # init the sockets
+        self._sdr_receive_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sdr_receive_socket.bind(self.RECEIVING_ADDR)
+        self._sdr_receive_socket.settimeout(0.02)
+
+        self._sdr_send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        # run
+        while True:
+            if self.stop_event.is_set():
+                logger.info("Shutting down SdrThread")
+                break
+            if not self.lock:
+                try:
+                    self.lock = True
+                    message = self._sdr_receive_socket.recv(self.BUFFER_LEN)
+                    self.lock = False
+                except socket.timeout:
+                    message = None
+                    self.lock = False
+                if message is not None:
+                    try:
+                        datagram = pppDatagram.decode(message)
+                    except pppDatagramError as e:
+                        logger.warning(f"got problematic datagram from sdr: {e.what()}")
+                    else:
+                        self.route_datagram(datagram)
+                else:
+                    time.sleep(0.1)
+
+        self._sdr_receive_socket.close()
+        self._sdr_send_socket.close()
+        self._sdr_receive_socket = None
+        self._sdr_send_socket = None
+
+    def route_datagram(self, datagram: pppDatagram) -> None:
+        if datagram.opcode == ppp_opcode.TPDO:
+            self.handle_tpdo(datagram)
+        elif datagram.opcode == ppp_opcode.RPDO:
+            # notify and ignore.
+            logger.error(f"rpdo recieved from sdr: {datagram.payload.hex()}")
+        elif datagram.opcode == ppp_opcode.HEARTBEAT:
+            self.handle_heartbeat(datagram)
+        else:
+            logger.warning(
+                f"sdrthread routing got unknown datagram! \
+                opcode: {datagram.opcode.hex()}, \
+                payload: {datagram.payload.hex()}"
+            )
+
+    def handle_tpdo(self, datagram: pppDatagram) -> None:
+        """Takes in a pdo, handles filling the values."""
+        fields = datagram.get_tpdo_vals()
+        if fields is None:
+            logger.error(f"recieved invalid TPDO datagram with number: {datagram.payload[0].hex()}")
+            return
+        for field in fields:
+            for index, subindex, value in field:
+                self.node.od[index][subindex].value = value
+
+    def handle_heartbeat(self, datagram: pppDatagram):
+        """Just handles the heartbeat"""
+        if info := datagram.get_heartbeat_info() is not None:
+            # hardcoded nodeid. bad. should fix.
+            self.node._on_heartbeat(0x75C, info[0], time.time())
+            if self._sdr_sessionid != info[2]:
+                logger.info(f"New session from sdr detected: {info[2]}")
+                self._sdr_sessionid = info[2]
+
+    def send_read(self, index: int, subindex: int) -> [str | float | bytes | bool | int, bool]:
+        """Function to send an sdo read over ppp. Blocks until the return is recieved."""
+        while self.lock:
+            time.sleep(0.001)
+        self.lock = True
+        # send the datagram
+        outgoing = pppDatagram.make_read_datagram(self._seq_num, index, subindex)
+        self._seq_num += 1
+        self._sdr_send_socket.sendto(outgoing, self.OUTGOING_ADDR)
+        send_time = monotonic()
+        acked = False
+        retries = 0
+
+        # listen for the response
+        while not acked:
+            if send_time + 1 < monotonic():
+                self._sdr_send_socket.sendto(outgoing, self.OUTGOING_ADDR)
+                send_time = monotonic()
+                retries += 1
+                if retries == 2:
+                    break
+
+            try:
+                message = self._sdr_receive_socket.recv(self.BUFFER_LEN)
+            except socket.timeout:
+                message = None
+            else:
+                try:
+                    datagram = pppDatagram.decode(message)
+                except pppDatagramError as e:
+                    logger.warning(f"got problematic datagram from sdr: {e.what()}")
+                else:
+                    if datagram.opcode != ppp_opcode.READ_RSP:
+                        self.route_datagram(datagram)
+                        continue
+                    if datagram.check_abort():
+                        logger.error(f"{datagram.get_abort_code()}")
+                    return [
+                        self.node.od_db["sdr"][index][subindex].decode_raw(datagram.get_data()),
+                        True
+                    ]
+        return [0, False]
+
+    def send_write(self, index: int, subindex: int, value: str | float | bytes | bool):
+        """Function to send an sdo read over ppp. Blocks until the return is recieved."""
+
+    # def send_write_window(self, values: list[str | float | bytes | bool]) -> None:
+    #     """Function to send an sdo read over ppp. Blocks until the return is recieved."""
+
