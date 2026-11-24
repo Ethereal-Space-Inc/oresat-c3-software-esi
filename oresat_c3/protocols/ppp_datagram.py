@@ -105,7 +105,7 @@ class pppDatagram:
         if code != 0:
             return self._log_abort(code)
         return ""
-    
+
     def get_data(self) -> bytes:
         if self.opcode != ppp_opcode.READ_RSP:
             raise pppDatagramError("tried to read data from non READ_RSP datagram")

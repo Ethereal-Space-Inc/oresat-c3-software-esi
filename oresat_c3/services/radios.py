@@ -1020,7 +1020,6 @@ class SdrThread(Thread):
         self.lock = True
         # send the datagram
         outgoing = pppDatagram.make_read_datagram(self._seq_num, index, subindex)
-        self._seq_num += 1
         self._sdr_send_socket.sendto(outgoing, self.OUTGOING_ADDR)
         send_time = monotonic()
         acked = False
@@ -1050,14 +1049,62 @@ class SdrThread(Thread):
                         continue
                     if datagram.check_abort():
                         logger.error(f"{datagram.get_abort_code()}")
-                    return [
-                        self.node.od_db["sdr"][index][subindex].decode_raw(datagram.get_data()),
-                        True
-                    ]
+                        continue
+                    if datagram.seq_num == self._seq_num:
+                        self._seq_num += 1
+                        data = datagram.get_data()
+                        data = self.node.od_db["sdr"][index][subindex].decode_raw(data)
+                        logger.debug(f"read value from sdr {hex(index)},{hex(subindex)}: {data}")
+                        return [data, True]
+        self._seq_num += 1
         return [0, False]
 
-    def send_write(self, index: int, subindex: int, value: str | float | bytes | bool):
+    def send_write(self, index: int, subindex: int, value: str | float | bytes | bool) -> bool:
         """Function to send an sdo read over ppp. Blocks until the return is recieved."""
+        while self.lock:
+            time.sleep(0.001)
+        self.lock = True
+        # send the datagram
+        if type(value) is not bytes:
+            value_b = value.to_bytes()
+        outgoing = pppDatagram.make_write_datagram(self._seq_num, index, subindex, value_b)
+        self._sdr_send_socket.sendto(outgoing, self.OUTGOING_ADDR)
+        send_time = monotonic()
+        acked = False
+        retries = 0
+
+        # listen for the response
+        while not acked:
+            if send_time + 1 < monotonic():
+                self._sdr_send_socket.sendto(outgoing, self.OUTGOING_ADDR)
+                send_time = monotonic()
+                retries += 1
+                if retries == 2:
+                    break
+
+            try:
+                message = self._sdr_receive_socket.recv(self.BUFFER_LEN)
+            except socket.timeout:
+                message = None
+            else:
+                try:
+                    datagram = pppDatagram.decode(message)
+                except pppDatagramError as e:
+                    logger.warning(f"got problematic datagram from sdr: {e.what()}")
+                else:
+                    if datagram.opcode != ppp_opcode.WRTIE_RSP:
+                        self.route_datagram(datagram)
+                        continue
+                    if datagram.check_abort():
+                        logger.error(f"{datagram.get_abort_code()}")
+                        continue
+                    if datagram.seq_num == self._seq_num:
+                        logger.debug(f"wrote value to sdr {hex(index)},{hex(subindex)}")
+                        self._seq_num += 1
+                        return True
+        self._seq_num += 1
+        return False
+
 
     # def send_write_window(self, values: list[str | float | bytes | bool]) -> None:
     #     """Function to send an sdo read over ppp. Blocks until the return is recieved."""
