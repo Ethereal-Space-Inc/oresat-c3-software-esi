@@ -483,7 +483,6 @@ class SbandRadio(Radio):
     SET_RATE = 675000
     MARGIN = 2
 
-    SDO_FAULT_LIMIT = 5  # number of failed sdos before going to 0xFF state.
     PPP_TIMEOUT = 1
 
     def __init__(
@@ -506,7 +505,6 @@ class SbandRadio(Radio):
         self._sdr_rnode = _sdr_rnode
 
         self.sdr_pwr = 0
-        self._sdo_fault = 0
         self._timeout_start_time = 0
         self._send_timer = monotonic()
         self._frames_to_send = 0
@@ -550,10 +548,8 @@ class SbandRadio(Radio):
         node_status = self._node_mgr.node_status("sdr")
         if node_status != 0 and node_status != 0xFF and node_status != 4:
             logger.info("Turning off SDR due to state 0.")
-            self._sdo_fault = 0 # we shouldn't error if we're trying to turn it off.
             self._sdr_thread.send_write("tx_send_cache", None, 0)
             self._sdr_thread.send_write("sdr_power", None, 0)
-            self._sdo_fault = 0
             self._node_mgr.disable("sdr")
 
     def _boot(self):
@@ -565,7 +561,6 @@ class SbandRadio(Radio):
             self._node_mgr.enable("sdr")
             self._timeout_start_time = monotonic()
             self._state = 1
-            self._sdo_fault = 0
         elif node_status == 2:  # The sdr is powered on. Configure and move to state 2.
             self._configure()
             self._reset()
@@ -596,14 +591,14 @@ class SbandRadio(Radio):
     def _disable(self) -> None:
         """Turn off the sband."""
         logger.info("Shutting down s-band gracefully")
-        self._sdo_fault = 0 # we shouldn't error if we're trying to turn it off.
         self._sdr_thread.send_write("tx_send_cache", None, 0)
         self._sdr_thread.send_write("sdr_power", None, 0)
+
         self._sdr_event.set()
         self._sdr_thread.join()
         self._sdr_thread = None
         self._sdr_event.clear()
-        self._sdo_fault = 0
+
         self._node_mgr.disable("sdr")
         time.sleep(2) # give the nodemanager time to mark it as off before state 0 kills it again.
         self._state = 0
@@ -665,47 +660,31 @@ class SbandRadio(Radio):
 
     def send_data_now(self):
         """
-        Send the commands to being downlinking and start the timer for when we should send again"""
+        Send the commands to being downlinking and start the timer for when we should send again
+        """
         self._state = 3
         baud = self.SET_RATE / (self.SET_SAMPLES / 2) # should be 675000 with the flight config
         duration = self._frames_to_send * 1275 * 8 / baud + 1 # SDR uses fixed 1275B frames.
         # We add a second to the duration so that there aren't any issues with state switching.
 
-        succeeded = True
-        succeeded and self._sdr_thread.send_write("tx_send_cache", None, 1)
-        if not succeeded:
-            self._state = 0xFF
-            logger.error("Sband SDR driver failed during send_data_now")
+        self._sdr_thread.send_write("sdr_power", None, 1)
+
+        state = self._sdr_thread.send_read("sdr_state", None)
+        while state[0] != 2:
+            if not state[1]:
+                logger.error("ppp read failed.")
+            state = self._sdr_thread.send_read("sdr_state", None)
+            if state[0] == 4:
+                self._state = 0xFF
+                logger.error("sdr moved into state error when trying to set power on.")
+
+        self._sdr_thread.send_write("tx_send_cache", None, 1)
 
         self._send_timer = monotonic() + duration + self.MARGIN
 
     # customer facing interaction functions
     def send_frame(self, payload):
         """Just calls the private function."""
-
-        ##### BAD. FIX.
-        if self.sdr_pwr != 1:
-            attempts = 0
-            backoff = 0.3
-            while True:
-                result = self._sdr_thread.send_read("sdr_status", None)
-                if not result[1]:
-                    if self.state == 0xFF:
-                        return
-                elif result[0] == 1:
-                    self.sdr_pwr = 1
-                    time.sleep(2)
-                    break
-                else:
-                    if result[0] == 0:
-                        self._sdr_thread.send_write("sdr_power", None, 1)
-                    time.sleep(backoff)
-                    backoff += 0.3
-                    attempts += 1
-                    if attempts > 20:
-                        logger.error("SDR failed to set power to on after 30 second.")
-                        break
-                    # todo: figure out payload downlink reporting
 
         self._sdr_thread.send_write("tx_speedy_transfer", None, payload)
 
@@ -732,11 +711,6 @@ class SbandRadio(Radio):
     @property
     def state(self):
         return self._state
-
-
-        # max frames is 10000
-        # send 500, then stop, then 500, then stop, then etc.
-
 
 class SdrThread(Thread):
     """
@@ -861,7 +835,6 @@ class SdrThread(Thread):
         subindex: int | str | None
     ) -> [str | float | bytes | bool | int, bool]:
         """Function to send an sdo read over ppp. Blocks until the return is recieved."""
-        # condition indices
         index, subindex = self.condition_addr(index, subindex)
 
         while self.lock:
@@ -874,7 +847,6 @@ class SdrThread(Thread):
         acked = False
         retries = 0
 
-        # listen for the response
         while not acked:
             if send_time + 1 < monotonic():
                 self._sdr_send_socket.sendto(outgoing, self.OUTGOING_ADDR)
