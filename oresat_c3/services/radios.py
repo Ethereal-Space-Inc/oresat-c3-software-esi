@@ -512,12 +512,15 @@ class SbandRadio(Radio):
         self._frames_to_send = 0
         self._last_frame = 0
 
-        self._ppp_proc = None
+        self._sdr_thread = None
         self._ppp_seqnum = 0
+        self._sdr_event = Event()
+        self._sdr_event.clear()
 
     def __del__(self):
-        if self._ppp_proc is not None:
-            self._ppp_proc.kill()
+        if self._sdr_thread is not None:
+            self._sdr_event.set()
+            self._sdr_thread.join()
 
     def state_machine(self):
         """State machine for the Sband. States are defined above."""
@@ -548,8 +551,8 @@ class SbandRadio(Radio):
         if node_status != 0 and node_status != 0xFF and node_status != 4:
             logger.info("Turning off SDR due to state 0.")
             self._sdo_fault = 0 # we shouldn't error if we're trying to turn it off.
-            self._fault_tolerant_lax_sdo_write("tx_send_cache", None, 0)
-            self._fault_tolerant_lax_sdo_write("sdr_power", None, 0)
+            self._sdr_thread.send_write("tx_send_cache", None, 0)
+            self._sdr_thread.send_write("sdr_power", None, 0)
             self._sdo_fault = 0
             self._node_mgr.disable("sdr")
 
@@ -594,8 +597,12 @@ class SbandRadio(Radio):
         """Turn off the sband."""
         logger.info("Shutting down s-band gracefully")
         self._sdo_fault = 0 # we shouldn't error if we're trying to turn it off.
-        self._fault_tolerant_lax_sdo_write("tx_send_cache", None, 0)
-        self._fault_tolerant_lax_sdo_write("sdr_power", None, 0)
+        self._sdr_thread.send_write("tx_send_cache", None, 0)
+        self._sdr_thread.send_write("sdr_power", None, 0)
+        self._sdr_event.set()
+        self._sdr_thread.join()
+        self._sdr_thread = None
+        self._sdr_event.clear()
         self._sdo_fault = 0
         self._node_mgr.disable("sdr")
         time.sleep(2) # give the nodemanager time to mark it as off before state 0 kills it again.
@@ -618,10 +625,14 @@ class SbandRadio(Radio):
         # self._node.sdo_write("sdr", "tx_settings", "idle_enabled", 0)
         # self._node.sdo_write("sdr", "tx_settings", "rs_enabled", 1)
 
-        samples = self._fault_tolerant_forced_sdo_read("tx_settings", "samples_per_symbol")
+        # setup the connection.
+        self._sdr_thread = SdrThread(self._node, self._sdr_event)
+        self._sdr_thread.start()
+
+        samples = self._sdr_thread.send_read("tx_settings", "samples_per_symbol")
         if samples[1] and (samples[0] != self.SET_SAMPLES):
             logger.info(f"Setting sdr samples per symbol to {self.SET_SAMPLES} from {samples}")
-            self._fault_tolerant_forced_sdo_write(
+            self._sdr_thread.send_write(
                 "tx_settings",
                 "samples_per_symbol",
                 self.SET_SAMPLES
@@ -630,10 +641,10 @@ class SbandRadio(Radio):
             self._state = 0xFF
             logger.error("Sband SDR driver failed during _configure in samples per symbol")
 
-        sample_rate = self._fault_tolerant_forced_sdo_read("tx_settings", "sampling_rate")
+        sample_rate = self._sdr_thread.send_read("tx_settings", "sampling_rate")
         if sample_rate[1] and (sample_rate[0] != self.SET_RATE):
             logger.info(f"Setting sdr sample_rate to {self.SET_RATE} from {sample_rate}")
-            self._fault_tolerant_forced_sdo_write(
+            self._sdr_thread.send_write(
                 "tx_settings",
                 "sampling_rate",
                 self.SET_RATE
@@ -645,9 +656,8 @@ class SbandRadio(Radio):
     def _reset(self):
         """send the commands to turn off the Transmitter and let the S-Band take more data."""
         succeeded = True
-        succeeded and self._fault_tolerant_forced_sdo_write("sdr_power", None, 0)
+        succeeded and self._sdr_thread.send_write("sdr_power", None, 0)
         self.sdr_pwr = 0
-        # succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 0)
         self._frames_to_send = 0
         if not succeeded:
             self._state = 0xFF
@@ -662,140 +672,23 @@ class SbandRadio(Radio):
         # We add a second to the duration so that there aren't any issues with state switching.
 
         succeeded = True
-        # succeeded and self._fault_tolerant_forced_sdo_write("sdr_power", None, 1)
-        succeeded and self._fault_tolerant_forced_sdo_write("tx_send_cache", None, 1)
+        succeeded and self._sdr_thread.send_write("tx_send_cache", None, 1)
         if not succeeded:
             self._state = 0xFF
             logger.error("Sband SDR driver failed during send_data_now")
 
         self._send_timer = monotonic() + duration + self.MARGIN
 
-    # def _fault_tolerant_forced_sdo_read(
-    #     self,
-    #     index: int | str,
-    #     subindex: int | str | None,
-    # ) -> [str | float | bytes | bool | int, bool]:
-    #     """
-    #     Keeps trying to SDO read until it fails too many times or succeeds. Returns the value and
-    #     success state, with the value being meaningful only if the sdo succeeded.
-    #     """
-    #     while True:
-    #         try:
-    #             value = self._node.sdo_read("sdr", index, subindex)
-    #         except SdoError as e:
-    #             logger.error(f"failed to sdo read from SDR: {e}")
-    #             self._sdo_fault += 1
-    #             if self._sdo_fault >= self.SDO_FAULT_LIMIT:
-    #                 self._state = 0xFF
-    #                 return [0, False]
-    #             time.sleep(0.051)
-    #         else:
-    #             logger.debug(f"Read value {value} from {index}:{subindex} on S band SDR")
-    #             self._sdo_fault = 0
-    #             return [value, True]
-
-    # def _fault_tolerant_lax_sdo_write(
-    #     self,
-    #     index: int | str,
-    #     subindex: int | str | None,
-    #     value: str | float | bytes | bool
-    # ) -> bool:
-    #     """
-    #     Keeps trying to read an SDO until it fails too many times or succeeds. Returns the value
-    #     and success state, with the value being meaningful only if the sdo succeeded.
-    #     """
-    #     try:
-    #         self._node.sdo_write("sdr", index, subindex, value)
-    #     except SdoError as e:
-    #         logger.error(f"failed to sdo write SDR: {e}")
-    #         self._sdo_fault += 1
-    #         if self._sdo_fault >= self.SDO_FAULT_LIMIT:
-    #             self._state = 0xFF
-    #             return False
-    #         return False
-    #     else:
-    #         logger.debug(f"Wrote value {value} to {index}:{subindex} on S band SDR")
-    #         self._sdo_fault = 0
-    #         return True
-
-    # def _fault_tolerant_forced_sdo_write(
-    #     self,
-    #     index: int | str,
-    #     subindex: int | str | None,
-    #     value: str | float | bytes | bool
-    # ) -> bool:
-    #     """
-    #     Keeps trying to read an SDO until it fails too many times or succeeds. Returns the value
-    #     and success state, with the value being meaningful only if the sdo succeeded.
-    #     """
-    #     while True:
-    #         try:
-    #             self._node.sdo_write("sdr", index, subindex, value)
-    #         except SdoError as e:
-    #             logger.error(f"failed to sdo write SDR: {e}")
-    #             self._sdo_fault += 1
-    #             if self._sdo_fault >= self.SDO_FAULT_LIMIT:
-    #                 self._state = 0xFF
-    #                 return False
-    #             time.sleep(0.051)
-    #         else:
-    #             logger.debug(f"Wrote value {value} to {index}:{subindex} on S band SDR")
-    #             self._sdo_fault = 0
-    #             return True
-
-    # def _fault_tolerant_forced_sdo_block_write_frame(
-    #     self,
-    #     frame: bytes
-    # ) -> bool:
-    #     """
-    #     Keeps trying to send a given frame until it either succeeds, or fails too much. Uses the
-    #     block transfer sdo rather than the normal, slower SDOs. This method is intended to be used
-    #     only for the transfer of complete frames, and should not be used for anything else.
-    #     """
-    #     if len(frame) > 1024:
-    #         logger.error("Error sending frame to sband, got frame length greater than 1024 bytes.")
-    #         return False
-    #     attempts = 0
-    #     backoff = 0.3
-    #     _sdo_fault = 0
-
-    #     while True:
-    #         try:
-    #             with self._sdr_rnode.sdo['tx_speedy_transfer'].open(
-    #                 'wb', size=len(frame), block_transfer=True
-    #             ) as outfile:
-    #                 outfile.write(frame)
-    #         except SdoError as e:
-    #             logger.error(f"failed to block transfer sdo write frame to sband: {e}")
-    #             # self._fault_tolerant_lax_sdo_read_log("tx_data_statistics", "rx_bytes")
-    #             _sdo_fault += 1
-    #             if _sdo_fault >= self.SDO_FAULT_LIMIT:
-    #                 if attempts < 4:
-    #                     _sdo_fault = 0
-    #                     attempts += 1
-    #                     logger.error(f"reattempting SDO of frame to Sband. Attempts:{attempts}")
-    #                     time.sleep(3)
-    #                     backoff = 0.3
-    #                     continue
-    #                 return False
-    #             time.sleep(backoff)
-    #             backoff *= 2
-    #         else:
-    #             logger.debug("Sent frame to S band SDR")
-    #             self._sdo_fault = 0
-    #             self._frames_to_send += 1
-    #             self._last_frame = monotonic()
-    #             return
-
     # customer facing interaction functions
     def send_frame(self, payload):
         """Just calls the private function."""
 
+        ##### BAD. FIX.
         if self.sdr_pwr != 1:
             attempts = 0
             backoff = 0.3
             while True:
-                result = self._fault_tolerant_forced_sdo_read("sdr_status", None)
+                result = self._sdr_thread.send_read("sdr_status", None)
                 if not result[1]:
                     if self.state == 0xFF:
                         return
@@ -805,7 +698,7 @@ class SbandRadio(Radio):
                     break
                 else:
                     if result[0] == 0:
-                        self._fault_tolerant_forced_sdo_write("sdr_power", None, 1)
+                        self._sdr_thread.send_write("sdr_power", None, 1)
                     time.sleep(backoff)
                     backoff += 0.3
                     attempts += 1
@@ -814,7 +707,7 @@ class SbandRadio(Radio):
                         break
                     # todo: figure out payload downlink reporting
 
-        self._fault_tolerant_forced_sdo_block_write_frame(payload)
+        self._sdr_thread.send_write("tx_speedy_transfer", None, payload)
 
     def can_send_now(self):
         """Used to determine if we should queue or send immediately"""
@@ -840,54 +733,9 @@ class SbandRadio(Radio):
     def state(self):
         return self._state
 
-    def _activate_pppd(self):
-        self._ppp_proc = subprocess.Popen([
-            "/usr/sbin/pppd",
-            "nodetach",
-            "nocrtscts",
-            "lock",
-            "noauth",
-            "maxfail",
-            "0",
-            "persist",
-            "10.0.42.1:10.0.42.2",
-            "passive",
-            "local",
-            "noproxyarp",
-            "/dev/ttyS5",
-            "921600",
-        ])
 
-    def write_sdo_ppp(
-        self,
-        index: int | str,
-        subindex: int | str | None,
-        value: str | float | bytes | bool,
-        windowed: bool = False
-    ) -> None:
         # max frames is 10000
         # send 500, then stop, then 500, then stop, then etc.
-        """Converts a write request into a pppdatagram"""
-        datagram = self.PPP_HEADER + self.PPP_WRITE_OPCODE
-        datagram += b"\x01" if windowed else b"\x00"
-        datagram += self._ppp_seqnum.to_bytes(2, "little")
-        datagram += len(value).to_bytes(2, "little")
-        datagram += value.to_bytes()
-
-        self._out_socket.send(datagram)
-
-        if not windowed:
-            #listen for the response:
-            timeout = monotonic() + self.PPP_TIMEOUT
-            while timeout > monotonic():
-                self._in_socket.recv()
-
-    def read_sdo_ppp(
-        self,
-        index: int | str,
-        subindex: int | str | None,
-    ) -> [str | float | bytes | bool | int, bool]:
-        """Read an index from using the ppp link"""
 
 
 class SdrThread(Thread):
@@ -911,14 +759,23 @@ class SdrThread(Thread):
         self._sdr_sessionid = None
         self._seq_num = 0 # resets every time we start the sdr.
 
+        self._ppp_proc = None
+
     def __del__(self):
         if self._sdr_receive_socket is not None:
             self._sdr_receive_socket.close()
         if self._sdr_send_socket is not None:
             self._sdr_send_socket.close()
 
+        if self._ppp_proc is not None:
+            self._ppp_proc.kill()
+            self._ppp_proc = None
+
     def run(self):
         """Check the sockets and handle things."""
+        # start the ppp process
+        self._activate_pppd()
+
         # init the sockets
         self._sdr_receive_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sdr_receive_socket.bind(self.RECEIVING_ADDR)
@@ -952,6 +809,8 @@ class SdrThread(Thread):
         self._sdr_send_socket.close()
         self._sdr_receive_socket = None
         self._sdr_send_socket = None
+        self._ppp_proc.kill()
+        self._ppp_proc = None
 
     def route_datagram(self, datagram: pppDatagram) -> None:
         if datagram.opcode == ppp_opcode.TPDO:
@@ -996,8 +855,15 @@ class SdrThread(Thread):
         self._sdr_send_socket.sendto(outgoing, self.OUTGOING_ADDR)
         self.lock = False
 
-    def send_read(self, index: int, subindex: int) -> [str | float | bytes | bool | int, bool]:
+    def send_read(
+        self,
+        index: int | str,
+        subindex: int | str | None
+    ) -> [str | float | bytes | bool | int, bool]:
         """Function to send an sdo read over ppp. Blocks until the return is recieved."""
+        # condition indices
+        index, subindex = self.condition_addr(index, subindex)
+
         while self.lock:
             time.sleep(0.001)
         self.lock = True
@@ -1043,8 +909,15 @@ class SdrThread(Thread):
         self._seq_num += 1
         return [0, False]
 
-    def send_write(self, index: int, subindex: int, value: str | float | bytes | bool) -> bool:
+    def send_write(
+        self,
+        index: int | str,
+        subindex: int | str | None,
+        value: str | float | bytes | bool
+    ) -> bool:
         """Function to send an sdo read over ppp. Blocks until the return is recieved."""
+        index, subindex = self.condition_addr(index, subindex)
+
         while self.lock:
             time.sleep(0.001)
         self.lock = True
@@ -1057,7 +930,6 @@ class SdrThread(Thread):
         acked = False
         retries = 0
 
-        # listen for the response
         while not acked:
             if send_time + 1 < monotonic():
                 self._sdr_send_socket.sendto(outgoing, self.OUTGOING_ADDR)
@@ -1090,7 +962,34 @@ class SdrThread(Thread):
         self._seq_num += 1
         return False
 
-
     # def send_write_window(self, values: list[str | float | bytes | bool]) -> None:
     #     """Function to send an sdo read over ppp. Blocks until the return is recieved."""
 
+    def _activate_pppd(self):
+        self._ppp_proc = subprocess.Popen([
+            "/usr/sbin/pppd",
+            "nodetach",
+            "nocrtscts",
+            "lock",
+            "noauth",
+            "maxfail",
+            "0",
+            "persist",
+            "10.0.42.1:10.0.42.2",
+            "passive",
+            "local",
+            "noproxyarp",
+            "/dev/ttyS5",
+            "921600",
+        ])
+
+    def condition_addr (self, index: int | str, subindex: int | str | None) -> (int, int):
+        """Takes in an index and subindex pair, makes sure that they're in the right format."""
+        if subindex is None or (type(subindex) is int and subindex == 0):
+            new_index = self.node.od_db["sdr"][index].index
+            new_subindex = 0
+            return new_index, new_subindex
+        else:
+            new_index = self.node.od_db["sdr"][index][subindex].index
+            new_subindex = self.node.od_db["sdr"][index][subindex].subindex
+            return new_index, new_subindex
