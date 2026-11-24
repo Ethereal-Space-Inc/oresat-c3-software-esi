@@ -6,11 +6,11 @@ from enum import IntEnum
 class ppp_opcode(IntEnum):
     READ = 0x01
     WRITE = 0x02
-    READ_RSP = 0x81
-    WRITE_RSP = 0x82
     HEARTBEAT = 0x10
     TPDO = 0x11
     RPDO = 0x12
+    READ_RSP = 0x81
+    WRITE_RSP = 0x82
 
     HAS_INDEX = READ | WRITE | READ_RSP | WRITE_RSP
 
@@ -113,7 +113,7 @@ class pppDatagram:
 
     # Constructors
     @classmethod
-    def make_read_datagram(self, seq_num: int, index: int, subindex: int):
+    def make_read_datagram(cls, seq_num: int, index: int, subindex: int):
         """Helper functioin to make a read datagram with the minimum inputs"""
         payload = index.to_bytes(2, "little") + subindex.to_bytes(1, "little")
 
@@ -121,7 +121,7 @@ class pppDatagram:
 
     @classmethod
     def make_write_datagram(
-        self,
+        cls,
         seq_num: int,
         index: int,
         subindex: int,
@@ -134,6 +134,12 @@ class pppDatagram:
         payload = index.to_bytes(2, "little") + subindex.to_bytes(1, "little") + in_payload
 
         return pppDatagram(ppp_opcode(0x01), seq_num, payload, windowed=windowed)
+
+    @classmethod
+    def make_heartbeat(cls, seq_num: int):
+        """Makes a heartbeat. Hardcoded since if we're not in a good state then we're dead."""
+        payload = b"\x05\xE8\x01\x00\x00\x00" # we're fine, 1000ms, session id 1 (LE)
+        return pppDatagram(ppp_opcode(0x10), seq_num, payload)
 
     @classmethod
     def decode(cls, data: bytes):

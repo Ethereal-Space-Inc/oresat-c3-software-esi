@@ -670,147 +670,122 @@ class SbandRadio(Radio):
 
         self._send_timer = monotonic() + duration + self.MARGIN
 
-    # Fault tolerant SDO functions because cantbus and cantopen fucking suck.
-    def _fault_tolerant_lax_sdo_read_log(
-        self,
-        index: int | str,
-        subindex: int | str | None,
-        info: bool = False
-    ) -> None:
-        """
-        Tries to sdo read once and output the read value to the log. Returns nothing. This function
-        is intended to be used for creating debug information in the log. By default, it will output
-        to logger.debug although if info is True then it will output to logger.info instead.
-        """
-        try:
-            value = self._node.sdo_read("sdr", index, subindex)
-        except SdoError as e:
-            logger.error(f"failed to sdo read for debugging from SDR: {e}")
-            self._sdo_fault += 1
-            time.sleep(0.07)
-        else:
-            self._sdo_fault = 0
-            if info:
-                logger.info(f"SDR sdoread from {index}:{subindex} returned {value}")
-            else:
-                logger.debug(f"SDR sdoread from {index}:{subindex} returned {value}")
+    # def _fault_tolerant_forced_sdo_read(
+    #     self,
+    #     index: int | str,
+    #     subindex: int | str | None,
+    # ) -> [str | float | bytes | bool | int, bool]:
+    #     """
+    #     Keeps trying to SDO read until it fails too many times or succeeds. Returns the value and
+    #     success state, with the value being meaningful only if the sdo succeeded.
+    #     """
+    #     while True:
+    #         try:
+    #             value = self._node.sdo_read("sdr", index, subindex)
+    #         except SdoError as e:
+    #             logger.error(f"failed to sdo read from SDR: {e}")
+    #             self._sdo_fault += 1
+    #             if self._sdo_fault >= self.SDO_FAULT_LIMIT:
+    #                 self._state = 0xFF
+    #                 return [0, False]
+    #             time.sleep(0.051)
+    #         else:
+    #             logger.debug(f"Read value {value} from {index}:{subindex} on S band SDR")
+    #             self._sdo_fault = 0
+    #             return [value, True]
 
-    def _fault_tolerant_forced_sdo_read(
-        self,
-        index: int | str,
-        subindex: int | str | None,
-    ) -> [str | float | bytes | bool | int, bool]:
-        """
-        Keeps trying to SDO read until it fails too many times or succeeds. Returns the value and
-        success state, with the value being meaningful only if the sdo succeeded.
-        """
-        while True:
-            try:
-                value = self._node.sdo_read("sdr", index, subindex)
-            except SdoError as e:
-                logger.error(f"failed to sdo read from SDR: {e}")
-                self._sdo_fault += 1
-                if self._sdo_fault >= self.SDO_FAULT_LIMIT:
-                    self._state = 0xFF
-                    return [0, False]
-                time.sleep(0.051)
-            else:
-                logger.debug(f"Read value {value} from {index}:{subindex} on S band SDR")
-                self._sdo_fault = 0
-                return [value, True]
+    # def _fault_tolerant_lax_sdo_write(
+    #     self,
+    #     index: int | str,
+    #     subindex: int | str | None,
+    #     value: str | float | bytes | bool
+    # ) -> bool:
+    #     """
+    #     Keeps trying to read an SDO until it fails too many times or succeeds. Returns the value
+    #     and success state, with the value being meaningful only if the sdo succeeded.
+    #     """
+    #     try:
+    #         self._node.sdo_write("sdr", index, subindex, value)
+    #     except SdoError as e:
+    #         logger.error(f"failed to sdo write SDR: {e}")
+    #         self._sdo_fault += 1
+    #         if self._sdo_fault >= self.SDO_FAULT_LIMIT:
+    #             self._state = 0xFF
+    #             return False
+    #         return False
+    #     else:
+    #         logger.debug(f"Wrote value {value} to {index}:{subindex} on S band SDR")
+    #         self._sdo_fault = 0
+    #         return True
 
-    def _fault_tolerant_lax_sdo_write(
-        self,
-        index: int | str,
-        subindex: int | str | None,
-        value: str | float | bytes | bool
-    ) -> bool:
-        """
-        Keeps trying to read an SDO until it fails too many times or succeeds. Returns the value
-        and success state, with the value being meaningful only if the sdo succeeded.
-        """
-        try:
-            self._node.sdo_write("sdr", index, subindex, value)
-        except SdoError as e:
-            logger.error(f"failed to sdo write SDR: {e}")
-            self._sdo_fault += 1
-            if self._sdo_fault >= self.SDO_FAULT_LIMIT:
-                self._state = 0xFF
-                return False
-            return False
-        else:
-            logger.debug(f"Wrote value {value} to {index}:{subindex} on S band SDR")
-            self._sdo_fault = 0
-            return True
+    # def _fault_tolerant_forced_sdo_write(
+    #     self,
+    #     index: int | str,
+    #     subindex: int | str | None,
+    #     value: str | float | bytes | bool
+    # ) -> bool:
+    #     """
+    #     Keeps trying to read an SDO until it fails too many times or succeeds. Returns the value
+    #     and success state, with the value being meaningful only if the sdo succeeded.
+    #     """
+    #     while True:
+    #         try:
+    #             self._node.sdo_write("sdr", index, subindex, value)
+    #         except SdoError as e:
+    #             logger.error(f"failed to sdo write SDR: {e}")
+    #             self._sdo_fault += 1
+    #             if self._sdo_fault >= self.SDO_FAULT_LIMIT:
+    #                 self._state = 0xFF
+    #                 return False
+    #             time.sleep(0.051)
+    #         else:
+    #             logger.debug(f"Wrote value {value} to {index}:{subindex} on S band SDR")
+    #             self._sdo_fault = 0
+    #             return True
 
-    def _fault_tolerant_forced_sdo_write(
-        self,
-        index: int | str,
-        subindex: int | str | None,
-        value: str | float | bytes | bool
-    ) -> bool:
-        """
-        Keeps trying to read an SDO until it fails too many times or succeeds. Returns the value
-        and success state, with the value being meaningful only if the sdo succeeded.
-        """
-        while True:
-            try:
-                self._node.sdo_write("sdr", index, subindex, value)
-            except SdoError as e:
-                logger.error(f"failed to sdo write SDR: {e}")
-                self._sdo_fault += 1
-                if self._sdo_fault >= self.SDO_FAULT_LIMIT:
-                    self._state = 0xFF
-                    return False
-                time.sleep(0.051)
-            else:
-                logger.debug(f"Wrote value {value} to {index}:{subindex} on S band SDR")
-                self._sdo_fault = 0
-                return True
+    # def _fault_tolerant_forced_sdo_block_write_frame(
+    #     self,
+    #     frame: bytes
+    # ) -> bool:
+    #     """
+    #     Keeps trying to send a given frame until it either succeeds, or fails too much. Uses the
+    #     block transfer sdo rather than the normal, slower SDOs. This method is intended to be used
+    #     only for the transfer of complete frames, and should not be used for anything else.
+    #     """
+    #     if len(frame) > 1024:
+    #         logger.error("Error sending frame to sband, got frame length greater than 1024 bytes.")
+    #         return False
+    #     attempts = 0
+    #     backoff = 0.3
+    #     _sdo_fault = 0
 
-    def _fault_tolerant_forced_sdo_block_write_frame(
-        self,
-        frame: bytes
-    ) -> bool:
-        """
-        Keeps trying to send a given frame until it either succeeds, or fails too much. Uses the
-        block transfer sdo rather than the normal, slower SDOs. This method is intended to be used
-        only for the transfer of complete frames, and should not be used for anything else.
-        """
-        if len(frame) > 1024:
-            logger.error("Error sending frame to sband, got frame length greater than 1024 bytes.")
-            return False
-        attempts = 0
-        backoff = 0.3
-        _sdo_fault = 0
-
-        while True:
-            try:
-                with self._sdr_rnode.sdo['tx_speedy_transfer'].open(
-                    'wb', size=len(frame), block_transfer=True
-                ) as outfile:
-                    outfile.write(frame)
-            except SdoError as e:
-                logger.error(f"failed to block transfer sdo write frame to sband: {e}")
-                # self._fault_tolerant_lax_sdo_read_log("tx_data_statistics", "rx_bytes")
-                _sdo_fault += 1
-                if _sdo_fault >= self.SDO_FAULT_LIMIT:
-                    if attempts < 4:
-                        _sdo_fault = 0
-                        attempts += 1
-                        logger.error(f"reattempting SDO of frame to Sband. Attempts:{attempts}")
-                        time.sleep(3)
-                        backoff = 0.3
-                        continue
-                    return False
-                time.sleep(backoff)
-                backoff *= 2
-            else:
-                logger.debug("Sent frame to S band SDR")
-                self._sdo_fault = 0
-                self._frames_to_send += 1
-                self._last_frame = monotonic()
-                return
+    #     while True:
+    #         try:
+    #             with self._sdr_rnode.sdo['tx_speedy_transfer'].open(
+    #                 'wb', size=len(frame), block_transfer=True
+    #             ) as outfile:
+    #                 outfile.write(frame)
+    #         except SdoError as e:
+    #             logger.error(f"failed to block transfer sdo write frame to sband: {e}")
+    #             # self._fault_tolerant_lax_sdo_read_log("tx_data_statistics", "rx_bytes")
+    #             _sdo_fault += 1
+    #             if _sdo_fault >= self.SDO_FAULT_LIMIT:
+    #                 if attempts < 4:
+    #                     _sdo_fault = 0
+    #                     attempts += 1
+    #                     logger.error(f"reattempting SDO of frame to Sband. Attempts:{attempts}")
+    #                     time.sleep(3)
+    #                     backoff = 0.3
+    #                     continue
+    #                 return False
+    #             time.sleep(backoff)
+    #             backoff *= 2
+    #         else:
+    #             logger.debug("Sent frame to S band SDR")
+    #             self._sdo_fault = 0
+    #             self._frames_to_send += 1
+    #             self._last_frame = monotonic()
+    #             return
 
     # customer facing interaction functions
     def send_frame(self, payload):
@@ -948,7 +923,6 @@ class SdrThread(Thread):
         self._sdr_receive_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sdr_receive_socket.bind(self.RECEIVING_ADDR)
         self._sdr_receive_socket.settimeout(0.02)
-
         self._sdr_send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         # run
@@ -1004,7 +978,7 @@ class SdrThread(Thread):
             for index, subindex, value in field:
                 self.node.od[index][subindex].value = value
 
-    def handle_heartbeat(self, datagram: pppDatagram):
+    def handle_heartbeat(self, datagram: pppDatagram) -> None:
         """Just handles the heartbeat"""
         if info := datagram.get_heartbeat_info() is not None:
             # hardcoded nodeid. bad. should fix.
@@ -1012,6 +986,15 @@ class SdrThread(Thread):
             if self._sdr_sessionid != info[2]:
                 logger.info(f"New session from sdr detected: {info[2]}")
                 self._sdr_sessionid = info[2]
+        self.send_heartbeat()
+
+    def send_heartbeat(self) -> None:
+        while self.lock:
+            time.sleep(0.001)
+        outgoing = pppDatagram.make_heartbeat(self._seq_num)
+        self.lock = True
+        self._sdr_send_socket.sendto(outgoing, self.OUTGOING_ADDR)
+        self.lock = False
 
     def send_read(self, index: int, subindex: int) -> [str | float | bytes | bool | int, bool]:
         """Function to send an sdo read over ppp. Blocks until the return is recieved."""
@@ -1056,6 +1039,7 @@ class SdrThread(Thread):
                         data = self.node.od_db["sdr"][index][subindex].decode_raw(data)
                         logger.debug(f"read value from sdr {hex(index)},{hex(subindex)}: {data}")
                         return [data, True]
+        logger.warning(f"sdr failed to read. seq_num: {self._seq_num}")
         self._seq_num += 1
         return [0, False]
 
@@ -1102,6 +1086,7 @@ class SdrThread(Thread):
                         logger.debug(f"wrote value to sdr {hex(index)},{hex(subindex)}")
                         self._seq_num += 1
                         return True
+        logger.warning(f"sdr failed to write. seq_num: {self._seq_num}")
         self._seq_num += 1
         return False
 
