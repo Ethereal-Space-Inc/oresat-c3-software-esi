@@ -747,16 +747,13 @@ class SdrThread(Thread):
 
     def run(self):
         """Check the sockets and handle things."""
-        # start the ppp process
         self._activate_pppd()
 
-        # init the sockets
         self._sdr_receive_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sdr_receive_socket.bind(self.RECEIVING_ADDR)
         self._sdr_receive_socket.settimeout(0.02)
         self._sdr_send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-        # run
         while True:
             if self.stop_event.is_set():
                 logger.info("Shutting down SdrThread")
