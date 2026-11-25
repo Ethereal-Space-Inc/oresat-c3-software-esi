@@ -560,6 +560,9 @@ class SbandRadio(Radio):
             logger.debug("telling nodemgr to turn on sdr.")
             self._node_mgr.enable("sdr")
             self._timeout_start_time = monotonic()
+            if self._sdr_thread is None:
+                self._sdr_thread = SdrThread(self._node, self._sdr_event)
+                self._sdr_thread.start()
             self._state = 1
         elif node_status == 2:  # The sdr is powered on. Configure and move to state 2.
             self._configure()
@@ -621,8 +624,6 @@ class SbandRadio(Radio):
         # self._node.sdo_write("sdr", "tx_settings", "rs_enabled", 1)
 
         # setup the connection.
-        self._sdr_thread = SdrThread(self._node, self._sdr_event)
-        self._sdr_thread.start()
 
         samples = self._sdr_thread.send_read("tx_settings", "samples_per_symbol")
         if samples[1] and (samples[0] != self.SET_SAMPLES):
@@ -766,6 +767,7 @@ class SdrThread(Thread):
                 except socket.timeout:
                     message = None
                     self.lock = False
+                logger.warning(f"got message {message}")
                 if message is not None:
                     try:
                         datagram = pppDatagram.decode(message)
@@ -776,6 +778,7 @@ class SdrThread(Thread):
                 else:
                     time.sleep(0.1)
 
+        self.stop_event.clear()
         self._sdr_receive_socket.close()
         self._sdr_send_socket.close()
         self._sdr_receive_socket = None
@@ -873,9 +876,11 @@ class SdrThread(Thread):
                         data = datagram.get_data()
                         data = self.node.od_db["sdr"][index][subindex].decode_raw(data)
                         logger.debug(f"read value from sdr {hex(index)},{hex(subindex)}: {data}")
+                        self.lock = False
                         return [data, True]
         logger.warning(f"sdr failed to read. seq_num: {self._seq_num}")
         self._seq_num += 1
+        self.lock = False
         return [0, False]
 
     def send_write(
@@ -926,9 +931,11 @@ class SdrThread(Thread):
                     if datagram.seq_num == self._seq_num:
                         logger.debug(f"wrote value to sdr {hex(index)},{hex(subindex)}")
                         self._seq_num += 1
+                        self.lock = False
                         return True
         logger.warning(f"sdr failed to write. seq_num: {self._seq_num}")
         self._seq_num += 1
+        self.lock = False
         return False
 
     # def send_write_window(self, values: list[str | float | bytes | bool]) -> None:
@@ -939,11 +946,11 @@ class SdrThread(Thread):
             "/usr/sbin/pppd",
             "nodetach",
             "nocrtscts",
-            "lock",
+            "nolock",
             "noauth",
             "maxfail",
             "0",
-            "persist",
+            "persist", "lcp-echo-interval", "5", "lcp-echo-failure", "3",
             "10.0.42.1:10.0.42.2",
             "passive",
             "local",
@@ -951,6 +958,7 @@ class SdrThread(Thread):
             "/dev/ttyS5",
             "921600",
         ])
+        logger.info("started ppp process.")
 
     def condition_addr (self, index: int | str, subindex: int | str | None) -> (int, int):
         """Takes in an index and subindex pair, makes sure that they're in the right format."""

@@ -50,10 +50,10 @@ class pppDatagram:
     def __init__(self, opcode: ppp_opcode, seq_num: int, payload: bytes, windowed: bool = False):
         """Create a datagram. Should not be used to parse a datagram."""
         self.opcode = opcode  # type
-        self.flags = b"\x01" if self.windowed else b"\x00"
+        self.flags = b"\x01" if windowed else b"\x00"
         self.seq_num = seq_num
         self.length = len(payload)
-        self.payload = payload
+        self._payload = payload
 
         if opcode.has_index():
             self._index = int.from_bytes(payload[0:1], "little")
@@ -65,43 +65,43 @@ class pppDatagram:
     def encode(self) -> bytes:
         datagram = self.PPP_HEADER + self.PPP_WRITE_OPCODE + self.opcode.to_bytes() + self.flags
         datagram += self.seq_num.to_bytes(2, "little") + self.length.to_bytes()
-        datagram += len(self.payload).to_bytes(2, "little")
-        datagram += self.payload
+        datagram += len(self._payload).to_bytes(2, "little")
+        datagram += self._payload
         return datagram
 
     def get_tpdo_vals(self) -> list[[int, int, int | float]] | None:
         if self.opcode != ppp_opcode.TPDO:
             return None
 
-        if self.payload[0] == 0x00:
+        if self._payload[0] == 0x00:
             return self._tpdo1()
-        if self.payload[0] == 0x02:
+        if self._payload[0] == 0x02:
             return self._tpdo3()
-        if self.payload[0] == 0x03:
+        if self._payload[0] == 0x03:
             return self._tpdo4()
         return None
 
-    def get_heartbeat_info(self) -> [int, int, int] | None:
+    def get_heartbeat_info(self) -> [int, int, int]:
         """NMT state u8, period ms u16, boot_id u32"""
         if self.opcode != ppp_opcode.HEARTBEAT:
-            return None
+            return [0,0,0]
 
-        state = self.payload[0]
-        period = int.from_bytes(self.payload[1:2], "little")
-        boot_id = int.from_bytes(self.payload[3:6], "little")
+        state = self._payload[0]
+        period = int.from_bytes(self._payload[1:2], "little")
+        boot_id = int.from_bytes(self._payload[3:6], "little")
         return [state, period, boot_id]
 
-    def check_abort(self) -> [bool, str]:
+    def check_abort(self) -> bool:
         """Gets the read information"""
         if self.opcode != ppp_opcode.READ_RSP and self.opcode != ppp_opcode.WRITE_RSP:
             return False
-        code = int.from_bytes(self.payload[2:5], "little")
+        code = int.from_bytes(self._payload[2:5], "little")
         return code != 0
 
     def get_abort_code(self) -> str:
         if self.opcode != ppp_opcode.READ_RSP and self.opcode != ppp_opcode.WRITE_RSP:
             return False
-        code = int.from_bytes(self.payload[2:5], "little")
+        code = int.from_bytes(self._payload[2:5], "little")
         if code != 0:
             return self._log_abort(code)
         return ""
@@ -109,7 +109,7 @@ class pppDatagram:
     def get_data(self) -> bytes:
         if self.opcode != ppp_opcode.READ_RSP:
             raise pppDatagramError("tried to read data from non READ_RSP datagram")
-        return self.payload[6:]
+        return self._payload[6:]
 
     # Constructors
     @classmethod
@@ -187,23 +187,23 @@ class pppDatagram:
     def _tpdo1 (self) -> list[[int, int, int]]:
         """Returns type information for tpdo1."""
         return list[
-            [0x4005, 0x2, int.from_bytes(self.payload[1:4], "little")],
-            [0x4005, 0x6, int.from_bytes(self.payload[5:8], "little")]
+            [0x4005, 0x2, int.from_bytes(self._payload[1:4], "little")],
+            [0x4005, 0x6, int.from_bytes(self._payload[5:8], "little")]
         ]
 
     def _tpdo3 (self) -> list[[int, int, float]]:
         """Returns type information for tpdo3."""
         return list[
-            [0x4004, 0x4, struct.unpack("<f", self.payload[1:4])],
-            [0x4004, 0x5, struct.unpack("<f", self.payload[5:8])]
+            [0x4004, 0x4, struct.unpack("<f", self._payload[1:4])],
+            [0x4004, 0x5, struct.unpack("<f", self._payload[5:8])]
         ]
 
     def _tpdo4 (self) -> list[[int, int, int]]:
         """Returns type information for tpdo4."""
         return list[
-            [0x4004, 0x1, int.from_bytes(self.payload[1:2], "little")],
-            [0x4004, 0x2, int.from_bytes(self.payload[3:4], "little")],
-            [0x4004, 0x3, int.from_bytes(self.payload[5:6], "little")]
+            [0x4004, 0x1, int.from_bytes(self._payload[1:2], "little")],
+            [0x4004, 0x2, int.from_bytes(self._payload[3:4], "little")],
+            [0x4004, 0x3, int.from_bytes(self._payload[5:6], "little")]
         ]
 
     def _log_abort (self, code: int) -> str:
